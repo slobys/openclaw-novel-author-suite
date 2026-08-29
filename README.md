@@ -8,34 +8,50 @@
 
 这套系统分成两层：`Novel Author` 负责创作决策与流程编排，`Novel Engine` 负责持久化、校验、事务提交和状态恢复。Agent 不能绕过 Engine 直接宣称章节已经完成。
 
+### 组件关系
+
+```mermaid
+flowchart LR
+    U[用户] --> O[OpenClaw]
+    O --> A[写作 Agent]
+    A --> C[连续性审稿]
+    A --> R[读者审稿]
+    A <--> E[Novel Engine]
+    E --> D[小说项目数据]
+```
+
+### 单章生产流程
+
 ```mermaid
 flowchart TB
-    U[用户：创建项目或继续下一章] --> A[Novel Author Agent<br/>读取 AGENTS / TOOLS / Workflow]
-
-    subgraph O[Agent 编排层：单章严格串行]
-        A --> P[Prepare<br/>读取 nextChapter、章纲、状态、记忆和长线台账]
-        P --> W[Writer Session<br/>生成正文]
-        W --> L{篇幅门禁<br/>默认 2000 / 2600 / 3200}
-        L -- 不通过 --> R[定点修订<br/>限制次数并要求正文 Hash 变化]
-        R --> L
-        L -- 通过 --> G[17 类章节总审计]
-        G --> C[Continuity Auditor<br/>独立 Session]
-        G --> E[Reader Editor<br/>独立 Session]
-        C --> Q[Quality Receipt<br/>三 Session + 同一正文 SHA-256]
-        E --> Q
-        Q --> PC[Precommit Gate]
-    end
-
-    subgraph N[Novel Engine 0.4.4：唯一权威数据源]
-        PC --> CM[Commit<br/>requestId 幂等 + CAS + 可恢复事务]
-        CM --> CL[Closure<br/>因果 / 伏笔 / 承诺 / 关系 / 对手时钟<br/>章节签名 / 动态状态 / 三级记忆]
-        CL --> I{Integrity Check}
-        I -- clean --> NX[nextChapter + 1]
-        I -- error --> B[Blocked<br/>报告真实错误并停止无限重试]
-    end
-
-    NX --> A
+    P[1 准备] --> D[2 写作]
+    D --> L{3 篇幅}
+    L -- 修订 --> D
+    L -- 通过 --> A[4 十七类审计]
+    A --> C[5 连续性审稿]
+    A --> R[6 读者审稿]
+    C --> Q[7 质量回执]
+    R --> Q
+    Q --> G[8 提交前门禁]
+    G --> M[9 提交]
+    M --> X[10 闭环]
+    X --> I{11 完整性}
+    I -- 通过 --> N[下一章]
+    I -- 失败 --> B[停止并报告]
 ```
+
+| 流程节点 | 完整含义 |
+| --- | --- |
+| 1 准备 | 读取服务端 `nextChapter`、章纲、动态状态、三级记忆和长线故事台账 |
+| 2 写作 | Writer 主会话根据资料包生成正文 |
+| 3 篇幅 | 应用项目级篇幅契约；默认硬下限 2000、理想目标 2600、建议上限 3200 |
+| 4 十七类审计 | 检查事实、时间线、空间、动机、知识边界、世界规则、资源、因果等 17 类问题 |
+| 5–6 独立审稿 | Continuity Auditor 与 Reader Editor 使用两个真实且不同的子会话 |
+| 7 质量回执 | Writer 与两个审稿会话绑定同一份正文 SHA-256，记录服务端 Quality Receipt |
+| 8 提交前门禁 | 核对正文、审计、质量回执、章节号、requestId 与 Hash 是否一致 |
+| 9 提交 | Novel Engine 通过幂等、CAS 和可恢复事务写入章节 |
+| 10 闭环 | 更新因果、伏笔、承诺、关系、对手时钟、章节签名、动态状态和三级记忆 |
+| 11 完整性 | 检查章节及所有派生记录；只有 `clean` 才把 `nextChapter` 交给下一章 |
 
 ### 各模块职责
 
