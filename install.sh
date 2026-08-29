@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="0.4.4"
+SUITE_VERSION="0.4.5"
 REPOSITORY="slobys/openclaw-novel-author-suite"
 REF="${NOVEL_SUITE_REF:-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
-WORKSPACE_DIR="${NOVEL_AUTHOR_WORKSPACE:-${STATE_DIR}/workspace-novel-author}"
+WORKSPACE_OVERRIDE="${NOVEL_AUTHOR_WORKSPACE:-}"
+WORKSPACE_DIR="${WORKSPACE_OVERRIDE:-${STATE_DIR}/workspace-novel-author}"
 BACKUP_ROOT="${STATE_DIR}/backups/novel-author-suite"
 SOURCE_DIR="${NOVEL_SUITE_SOURCE_DIR:-}"
 TEMP_DIR=""
@@ -27,6 +28,38 @@ need openclaw
 need curl
 need tar
 need git
+need node
+
+agents_json="$(openclaw agents list --json)" || die "Cannot read the OpenClaw agent roster. Run: openclaw config validate"
+existing_workspace="$(
+  printf '%s' "${agents_json}" | node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      const parsed = JSON.parse(input);
+      const agents = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.agents)
+          ? parsed.agents
+          : Array.isArray(parsed.list)
+            ? parsed.list
+            : [];
+      const found = agents.find((item) => item && (item.id === "novel-author" || item.agentId === "novel-author"));
+      if (found && typeof found.workspace === "string") process.stdout.write(found.workspace);
+    });
+  '
+)" || die "Cannot parse the OpenClaw agent roster."
+
+agent_exists=0
+if [[ -n "${existing_workspace}" ]]; then
+  agent_exists=1
+  if [[ -n "${WORKSPACE_OVERRIDE}" && "${WORKSPACE_OVERRIDE}" != "${existing_workspace}" ]]; then
+    die "novel-author already uses ${existing_workspace}; NOVEL_AUTHOR_WORKSPACE points to ${WORKSPACE_OVERRIDE}."
+  fi
+  WORKSPACE_DIR="${existing_workspace}"
+  log "Using existing novel-author workspace: ${WORKSPACE_DIR}"
+fi
 
 case "${WORKSPACE_DIR}" in
   /|"${HOME}"|"${STATE_DIR}") die "Unsafe workspace target: ${WORKSPACE_DIR}" ;;
@@ -67,9 +100,7 @@ log "Installing plugin from ${plugin_source}"
 openclaw plugins install "${plugin_source}" --force
 openclaw plugins enable novel-engine
 
-if openclaw agents list --json 2>/dev/null | grep -Eq '"(id|agentId)"[[:space:]]*:[[:space:]]*"novel-author"'; then
-  openclaw config set agents.entries.novel-author.workspace "${WORKSPACE_DIR}"
-else
+if [[ "${agent_exists}" != "1" ]]; then
   log "Creating novel-author agent"
   openclaw agents add novel-author --workspace "${WORKSPACE_DIR}" --non-interactive
 fi

@@ -1,6 +1,6 @@
 # workspace-novel-author V5.0 审计报告
 
-> 本文件保留 V5.0 历史审计记录。当前配套版本为 Novel Author V5.3.2 Balanced / Novel Engine 0.4.4，当前 Workspace 测试为 39 项；默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200，并增加自动修订次数、正文 Hash 变化和同稿循环阻断测试。
+> 本文件保留 V5.0 历史审计记录。当前配套版本为 Novel Author V5.3.2 Balanced / Novel Engine 0.4.5，当前 Workspace 测试为 39 项；默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200，并增加自动修订次数、正文 Hash 变化和同稿循环阻断测试。
 
 ## 基线判断
 
@@ -46,7 +46,7 @@
 - Precommit Gate 强制绑定 Quality receipt；
 - Closure 默认增加 `dynamic_state` 与 `memory_index`；
 - 新增 5 个 V5 协议和 3 个模板；
-- 历史版本曾以 companion patch 交付服务端门禁；公开版已由根目录 Novel Engine 0.4.4 直接提供，不再携带旧 ZIP 补丁。
+- 历史版本曾以 companion patch 交付服务端门禁；公开版已由根目录 Novel Engine 0.4.5 直接提供，不再携带旧 ZIP 补丁。
 
 ## 权威边界
 

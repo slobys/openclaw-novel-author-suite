@@ -1,4 +1,4 @@
-# novel-author 运行工具契约 — V5.3.2 Balanced / Novel Engine 0.4.4
+# novel-author 运行工具契约 — V5.3.2 Balanced / Novel Engine 0.4.5
 
 本文件用于启动时确认能力，不替代 `novel-author-workflow.yaml` 的阶段裁决。只承认当前 OpenClaw runtime 真实注册的工具。
 

@@ -1,6 +1,6 @@
-# Novel Engine 0.4.4 — Public Deployment Edition
+# Novel Engine 0.4.5 — Public Deployment Edition
 
-面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.4.4 保留 0.4.3 的项目写锁有限等待、租约心跳和陈旧锁安全回收，并与 Novel Author V5.3.2 Workspace 一起提供公开部署。新项目默认使用 2000 硬下限、2600 理想目标、3200 建议上限；项目数据格式不变。
+面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.4.5 保留 0.4.3 的项目写锁有限等待、租约心跳和陈旧锁安全回收，并与 Novel Author V5.3.2 Workspace 一起提供公开部署。新项目默认使用 2000 硬下限、2600 理想目标、3200 建议上限；项目数据格式不变。
 
 ## 核心能力
 

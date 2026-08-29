@@ -1,10 +1,10 @@
-# Novel Author V5.3.2 Balanced ↔ Novel Engine 0.4.4 桥接升级
+# Novel Author V5.3.2 Balanced ↔ Novel Engine 0.4.5 桥接升级
 
 本包覆盖 Agent 控制文档、工作流、Novel Author Skill、独立审稿协议、`independent_audit_gate.py` 及对应测试；不会覆盖你的小说项目、`memory/` 或 `exports/`。
 
 ## 使用顺序
 
-1. 先安装并验证 Novel Engine `0.4.4` 完整目录；
+1. 先安装并验证 Novel Engine `0.4.5` 完整目录；
 2. 备份当前 `workspace-novel-author`；
 3. 将本包目录结构覆盖到 Agent workspace 根目录；
 4. 运行 Agent Skill 测试；
@@ -40,7 +40,7 @@
 
 ## 主要变化
 
-- dynamic state、三级 memory、Signature、Closure 不再只存本地派生缓存，而由 Novel Engine 0.4.4 持久化；
+- dynamic state、三级 memory、Signature、Closure 不再只存本地派生缓存，而由 Novel Engine 0.4.5 持久化；
 - reviewer checks 在本地 Gate 中标准化为 Engine 可识别的状态对象，禁止 `pass：说明` 导致的重复 Quality 失败；
 - 默认篇幅改为硬下限 2000、理想目标 2600、建议上限 3200；达到 2000 后不再为了凑目标字数自动扩写；
 - 自动扩写仅允许一次，并通过修订前后正文 Hash 防止重复粘贴相同正文。

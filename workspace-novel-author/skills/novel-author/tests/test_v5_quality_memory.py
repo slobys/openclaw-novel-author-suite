@@ -364,11 +364,11 @@ class QualityGateTests(unittest.TestCase):
 
 
 class ServerCapabilityTests(unittest.TestCase):
-    def test_server_gate_rejects_pre_044_engine(self):
+    def test_server_gate_rejects_pre_045_engine(self):
         with tempfile.TemporaryDirectory() as temp:
             cap=Path(temp)/"cap.json"
             cap.write_text(json.dumps({
-                "engineVersion":"0.4.3","enforcedServerSide":True,"minChapterHanChars":2600,
+                "engineVersion":"0.4.4","enforcedServerSide":True,"minChapterHanChars":2600,
                 "commitRehash":True,"auditHashBinding":True,"completeAuditCoverage":True,
                 "independentQualityReceipt":True,"closureReceiptRequired":True,"requestIdRequired":True,
                 "derivedBodyHashBinding":True,"requiredAuditCategoryCount":17,"requestIdIdempotency":True,
@@ -383,7 +383,7 @@ class ServerCapabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); cap=root/"cap.json"
             cap.write_text(json.dumps({
-                "engineVersion":"0.4.4",
+                "engineVersion":"0.4.5",
                 "enforcedServerSide":True,"minChapterHanChars":2600,
                 "commitRehash":True,"auditHashBinding":True,"completeAuditCoverage":True,
                 "independentQualityReceipt":True,"requestIdIdempotency":True,
@@ -396,15 +396,15 @@ class ServerCapabilityTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertTrue(json.loads(result.stdout)["serverGateVerified"])
 
-    def test_server_gate_accepts_novel_engine_044_project_status(self):
+    def test_server_gate_accepts_novel_engine_045_project_status(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); cap=root/"status.json"
             cap.write_text(json.dumps({
-                "engineVersion":"0.4.4",
+                "engineVersion":"0.4.5",
                 "storyLedgers":{"chapterLengthGate":{"minHanChars":3200,"enforcedServerSide":True},"closureReceiptRequired":True,"requiredAuditCategories":[f"c{i}" for i in range(17)]},
                 "serverCapabilities":{
                     "serverGateVerified":True,
-                    "engineVersion":"0.4.4",
+                    "engineVersion":"0.4.5",
                     "hanLengthRecount":True,
                     "auditBodyHashBinding":True,
                     "completeAuditCoverage":True,

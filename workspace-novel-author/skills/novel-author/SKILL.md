@@ -1,9 +1,9 @@
 ---
 name: novel-author
-description: 使用 Novel Engine 0.4.4 创作、续写、审计和版本化修订中文长篇小说；维护跨章因果、伏笔、Promise/Payoff、人物关系、对手时钟、动态状态、三级记忆、类型体验、可恢复提交与服务端完整性闭环。
+description: 使用 Novel Engine 0.4.5 创作、续写、审计和版本化修订中文长篇小说；维护跨章因果、伏笔、Promise/Payoff、人物关系、对手时钟、动态状态、三级记忆、类型体验、可恢复提交与服务端完整性闭环。
 ---
 
-# Novel Author V5.3.2 Balanced — Novel Engine 0.4.4 Bridge
+# Novel Author V5.3.2 Balanced — Novel Engine 0.4.5 Bridge
 
 `novel-engine` 是作品事实、正文、状态、审计、Quality、台账、记忆、Closure 和提交结果的唯一权威来源。本 Skill 提供创作判断；workspace 脚本只作为第二道确定性门禁与本地编排证据。
 
