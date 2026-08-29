@@ -1,0 +1,7 @@
+{
+  "primaryExperiences": {
+    "comedy": {"target": 7, "floor": 5},
+    "adventure": {"target": 5, "floor": 3}
+  },
+  "secondaryExperiences": ["mystery", "growth"]
+}

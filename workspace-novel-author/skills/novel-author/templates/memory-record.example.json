@@ -1,0 +1,11 @@
+{
+  "memoryId": "P1-ch21-key-event-01",
+  "projectId": "P1",
+  "tier": "long",
+  "chapterNo": 21,
+  "text": "关键事件摘要",
+  "entities": ["hero", "location-1"],
+  "tags": ["promise", "location"],
+  "sourceRef": "chapter:21",
+  "sourceSha256": "REPLACE_WITH_64_HEX"
+}

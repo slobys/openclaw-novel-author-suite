@@ -1,0 +1,50 @@
+{
+  "name": "@slobys/openclaw-novel-engine",
+  "version": "0.4.4",
+  "description": "One-click OpenClaw novel author suite with a persistent engine, flexible length contracts, independent quality gates and recoverable story state.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "src",
+    "scripts",
+    "test",
+    "skills",
+    "openclaw.plugin.json",
+    "README.md",
+    "UPGRADE-0.4.1.md",
+    "UPGRADE-0.4.2.md",
+    "UPGRADE-0.4.3.md",
+    "UPGRADE-0.4.4.md",
+    "AUDIT-REPORT.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test test/*.test.js",
+    "check": "node scripts/check-package.js",
+    "verify": "npm run build && npm test && npm run check",
+    "pack:check": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "typebox": "^1.1.39"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.17",
+      "minGatewayVersion": "2026.5.17"
+    },
+    "build": {
+      "openclawVersion": "2026.7.1",
+      "pluginSdkVersion": "2026.7.1"
+    }
+  },
+  "engines": {
+    "node": ">=22.22.3"
+  }
+}
