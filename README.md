@@ -15,6 +15,38 @@
 
 小说写作和小说转漫剧可以分别安装；需要两套能力时，也可以依次执行两条安装命令。
 
+### 选择式一键安装
+
+只需执行一条总入口命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.0.0/setup.sh | bash
+```
+
+终端会显示：
+
+```text
+请选择要安装的版本：
+  1) 小说创作版（Novel Author + Novel Engine）
+  2) 小说转 AI 漫剧版（Novel Producer + Drama Producer + 9 Skills）
+
+请输入 1 或 2：
+```
+
+- 输入 `1`：只安装小说创作版；
+- 输入 `2`：只安装小说转 AI 漫剧版；
+- 不会默认把两套一起安装。
+
+如果执行环境无法显示交互菜单，也可以直接指定：
+
+```bash
+# 只安装小说创作版
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.0.0/setup.sh | bash -s -- 1
+
+# 只安装小说转 AI 漫剧版
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.0.0/setup.sh | bash -s -- 2
+```
+
 ## 系统逻辑结构
 
 这套系统分成两层：`Novel Author` 负责创作决策与流程编排，`Novel Engine` 负责持久化、校验、事务提交和状态恢复。Agent 不能绕过 Engine 直接宣称章节已经完成。
