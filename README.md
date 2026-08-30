@@ -4,6 +4,17 @@
 
 它提供项目级篇幅契约、17类逻辑审计、两个独立审稿会话、可恢复提交、动态状态、三级记忆、长期故事台账、Closure 与完整性检查。
 
+## 两条公开安装通道
+
+本仓库按用途拆成两条互不混装的分支：
+
+| 分支 | 适合谁 | 一键安装内容 |
+| --- | --- | --- |
+| `novel-author`（当前套件） | 想从零创作和连续写长篇小说 | Novel Author Agent + Novel Engine |
+| [`drama-pipeline`](../../tree/drama-pipeline) | 已有小说，想连续制作 AI 漫剧/短剧 | Novel Producer + Drama Producer + 9 个 DeepWhite Skills |
+
+小说写作和小说转漫剧可以分别安装；需要两套能力时，也可以依次执行两条安装命令。
+
 ## 系统逻辑结构
 
 这套系统分成两层：`Novel Author` 负责创作决策与流程编排，`Novel Engine` 负责持久化、校验、事务提交和状态恢复。Agent 不能绕过 Engine 直接宣称章节已经完成。
