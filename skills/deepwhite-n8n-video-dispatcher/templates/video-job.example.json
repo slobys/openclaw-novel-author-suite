@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.1",
+  "event": "openclaw_video_generation_requested",
+  "project_id": "DEMO",
+  "video_job_id": "demo_video_20260827_001",
+  "source_asset_job_id": "demo_assets_20260827_001",
+  "source_scene_asset_plan_id": "demo_s01e001_scene_assets_v001",
+  "defaults": {
+    "model": "doubao-seedance-2-0-mini-260615",
+    "resolution": "720p",
+    "ratio": "16:9",
+    "generate_audio": true,
+    "watermark": false,
+    "max_generation_attempts": 2,
+    "provider_max_wait_minutes": 180
+  },
+  "clips": [
+    {
+      "clip_id": "VP001",
+      "scene_id": "SC01",
+      "location_id": "LOC-LIN-HOME",
+      "sub_location_id": "SUBLOC-LIN-HOME-LIVINGROOM",
+      "location_asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY",
+      "background_reference_mode": "location_asset",
+      "prompt": "不要出现BGM，不要出现字幕。林满仓坐在木桌旁听母亲说话，镜头保持克制的中近景，人物只有轻微呼吸与视线变化。",
+      "duration": 8,
+      "reference_asset_ids": [
+        "AST-CH-LIN-MANCHANG",
+        "AST-LOC-LIN-HOME-LIVINGROOM-DAY"
+      ],
+      "filename": "DEMO_VP001_v01.mp4"
+    },
+    {
+      "clip_id": "VP002",
+      "scene_id": "SC03",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+      "location_asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "background_reference_mode": "scene_keyframe",
+      "scene_keyframe_asset_id": "AST-KF-SC03-001",
+      "prompt": "不要出现BGM，不要出现字幕。林满仓停在盐摊前，看向木制盐斗和麻袋，神色由疑惑转为凝重，画面保持集市盐摊的空间身份。",
+      "duration": 8,
+      "reference_asset_ids": [
+        "AST-KF-SC03-001"
+      ],
+      "filename": "DEMO_VP002_v01.mp4"
+    }
+  ]
+}

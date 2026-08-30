@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "project_id": "DEMO",
+  "episode_project_id": "demo_s01e001",
+  "source_screenplay": "script/episode_script.md",
+  "scenes": [
+    {
+      "scene_id": "SC01",
+      "scene_order": 1,
+      "source_scene_label": "1. 内景·林家堂屋·日",
+      "expected_duration_seconds": 16,
+      "movement_required": false,
+      "location_change_from_previous": false,
+      "route_requirements": {"minimum_anchor_count": 0, "required_roles": []}
+    },
+    {
+      "scene_id": "SC02",
+      "scene_order": 2,
+      "source_scene_label": "2. 外景·林家庭院至村口·日",
+      "expected_duration_seconds": 18,
+      "movement_required": true,
+      "location_change_from_previous": true,
+      "route_requirements": {"minimum_anchor_count": 3, "required_roles": ["departure", "arrival"]}
+    }
+  ]
+}

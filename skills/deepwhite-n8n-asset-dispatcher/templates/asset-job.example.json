@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "job_id": "demo_episode01_assets_001",
+  "project_id": "demo_episode01",
+  "source": "openclaw",
+  "created_at": "2026-07-24T00:00:00.000Z",
+  "defaults": {
+    "model": "gemini-3.1-flash-image",
+    "aspect_ratio": "16:9",
+    "image_size": "2K"
+  },
+  "assets": [
+    {
+      "asset_id": "CHAR_JINGJING_BASE_001",
+      "category": "character",
+      "name": "晶晶标准全身设定图",
+      "filename": "CHAR_JINGJING_BASE_001.png",
+      "prompt_zh": "一个完整、可直接用于生图的中文人物设定提示词。",
+      "prompt_en": "A complete English character design prompt ready for image generation.",
+      "negative_prompt": "文字、水印、Logo、重复人物、肢体畸形",
+      "asset_role": "video_reference",
+      "asset_kind": "character",
+      "angle_id": "three_quarter_front",
+      "layout_type": "single_view_clean",
+      "contains_multiple_independent_assets": false,
+      "aspect_ratio": "9:16",
+      "image_size": "2K",
+      "reference_images": [],
+      "metadata": {
+        "scene_ids": ["SC01"],
+        "character_ids": ["JINGJING"],
+        "continuity_notes": "保持发型、服装和年龄一致"
+      }
+    }
+  ]
+}

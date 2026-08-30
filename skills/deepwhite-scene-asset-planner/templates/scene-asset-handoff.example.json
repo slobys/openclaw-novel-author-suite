@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.1",
+  "project_id": "DEMO",
+  "episode_project_id": "demo_s01e001",
+  "source_plan_id": "demo_s01e001_scene_assets_v002",
+  "source_scene_index": "script/scene_index.json",
+  "gate_passed": true,
+  "scene_bindings": {
+    "SC02": {
+      "scene_id": "SC02",
+      "scene_order": 2,
+      "location_id": "LOC-LIN-HOME-TO-VILLAGE",
+      "sub_location_id": "SUBLOC-LIN-HOME-TO-VILLAGE-ROUTE",
+      "primary_location_asset_id": "AST-LOC-LIN-HOME-GATE-DAY",
+      "allowed_location_asset_ids": [
+        "AST-LOC-LIN-HOME-GATE-DAY",
+        "AST-LOC-FIELD-PATH-DAY",
+        "AST-LOC-VILLAGE-ENTRANCE-DAY"
+      ],
+      "route_anchors": [
+        {"route_anchor_id": "RA-SC02-01", "role": "departure", "order": 1, "location_asset_id": "AST-LOC-LIN-HOME-GATE-DAY", "predecessor_environment_asset_id": null},
+        {"route_anchor_id": "RA-SC02-02", "role": "path", "order": 2, "location_asset_id": "AST-LOC-FIELD-PATH-DAY", "predecessor_environment_asset_id": "AST-LOC-LIN-HOME-GATE-DAY"},
+        {"route_anchor_id": "RA-SC02-03", "role": "arrival", "order": 3, "location_asset_id": "AST-LOC-VILLAGE-ENTRANCE-DAY", "predecessor_environment_asset_id": "AST-LOC-FIELD-PATH-DAY"}
+      ]
+    }
+  },
+  "required_generation_asset_ids": [
+    "AST-LOC-LIN-HOME-GATE-DAY",
+    "AST-LOC-FIELD-PATH-DAY",
+    "AST-LOC-VILLAGE-ENTRANCE-DAY"
+  ],
+  "verified_reuse_asset_ids": []
+}

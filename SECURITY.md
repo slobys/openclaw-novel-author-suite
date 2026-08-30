@@ -1,13 +1,8 @@
 # Security
 
-## Trust boundary
+不要把 API Key、Webhook 密钥、OpenClaw 配置、小说正文、项目目录、会话、memory 或 n8n 凭证提交到公开仓库。
 
-OpenClaw plugins execute inside the Gateway process. Review `install.sh`, the pinned Git tag and the plugin source before installation. The one-click command intentionally uses a versioned URL instead of `main`.
+安装脚本只部署公开模板，并在覆盖同名文件前创建备份。它不会删除 `projects/`、`memory/`、`output/`、`.learnings/` 或会话数据。
 
-## Data handling
+发现安全问题时，请通过 GitHub Security Advisory 私下报告，不要在公开 Issue 中粘贴密钥或完整运行日志。
 
-The installer never uploads project data. It does not copy or delete `memory/`, `exports/`, `.novel-runtime/`, sessions, credentials or `~/.openclaw/data/novels`.
-
-## Reporting
-
-Please open a GitHub security advisory for vulnerabilities. Do not include API keys, private novel content, session transcripts or a complete `openclaw.json` in public issues.

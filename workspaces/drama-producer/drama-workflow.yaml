@@ -1,0 +1,706 @@
+schema_version: '1.4'
+pipeline_profile: scene_bound_auto_v1.2
+source_of_truth: true
+project:
+  name: AI Short Drama Production Pipeline
+  agent: drama-producer
+default_settings:
+  visual_authority: drama-producer
+  series_style_handoff:
+    required: true
+    explicit_user_style_policy: exact_passthrough
+    unspecified_style_policy: downstream_auto
+    resolved_contract_path: input/resolved_style_contract.json
+    forbid_ai_gate_as_user_confirmation: true
+  episode_count: auto
+  episode_duration:
+    default: auto_by_effective_story_beats
+    upstream_series_duration_policy: advisory_only
+    upstream_reference_fields:
+    - target_duration_seconds
+    - episode_duration_seconds
+    resolved_project_field: 制作规格.实际目标时长秒
+    resolution_output: review/duration_resolution.json
+    resolution_rules:
+    - 以必要对白自然时长、有效动作、冲突推进、爽点、反转和必要转场的最短成立时间相加
+    - 删除重复解释、静止凝视、无信息空镜和为了凑时长的环境展示
+    - 不得为了匹配上游参考秒数拉长表演、镜头或停顿
+    - 最终 timing_plan 总时长必须等于 resolved_duration_seconds，而不是上游参考值
+  pacing:
+    default_profile: short_drama_fast
+    allow_project_override: true
+    project_field: 制作规格.节奏模式
+    target_average_shot_duration_seconds: 1.2-2.5
+    ordinary_reaction_seconds: 0.3-0.8
+    important_reaction_seconds: 0.8-1.5
+    climax_hold_seconds: 1.0-2.5
+    ordinary_action_seconds: 0.5-1.5
+    dialogue_pre_pause_max_seconds: 0.2
+    dialogue_post_pause_max_seconds: 0.3
+    comedy_pause_seconds: 0.3-0.6
+    max_micro_beats_per_ordinary_reaction: 2
+    preferred_internal_shots_per_10_to_15_seconds: 4-6
+    ordinary_shot_major_issue_threshold_seconds: 3
+    scenic_observation:
+      ordinary_total_seconds: 1.5-2.5
+      character_notice_and_react_seconds: 0.3-0.8
+      important_reveal_total_seconds: 2.5-4.0
+      dramatic_hold_threshold_seconds: 4.0
+      require_continuous_new_visual_information: true
+      forbid_static_admiration_padding: true
+    slow_pacing_requires_explicit_reason: true
+    slow_pacing_exceptions:
+    - 明确的情绪高潮
+    - 关键反转揭示
+    - 首次重要景观揭示、景观中的剧情线索或关键情绪转折
+    - 用户明确要求慢节奏
+    - 复杂且不可压缩的连续物理动作
+    prompt_language:
+      prefer:
+      - 立刻
+      - 迅速
+      - 干脆
+      - 一气呵成
+      - 无多余停顿
+      avoid_by_default:
+      - 缓慢
+      - 慢慢
+      - 逐渐
+      - 极慢
+      - 半天不出声
+      - 静默约两秒
+  aspect_ratio:
+    default: '16:9'
+    orientation: 横屏
+    allow_project_override: true
+    project_field: 制作规格.画幅比例
+    legacy_project_fields:
+    - 制作规格.画幅建议
+    preserve_existing_explicit_setting: true
+    existing_project_without_field: 从既有资料继承；无法确定时先确认，不自动覆盖
+    propagation_targets:
+    - prompts/
+    - shots/
+    - transition/
+  asset_image_naming:
+    enabled: true
+    scheme: '{project_code}_{short_asset_id}_v{version}.{ext}'
+    short_asset_id_rule: remove AST- prefix from asset_id
+    default_extension: png
+    default_version: '01'
+    filename_charset: ASCII
+    require_project_code: true
+    require_primary_filename_per_prompt: true
+    require_detail_filename_per_required_image: false
+    one_filename_per_asset: true
+    manifest_output: assets/image_naming_manifest.json
+  asset_render_specs:
+    separate_from_final_video_aspect_ratio: true
+    require_per_asset_aspect_ratio: true
+    require_one_angle_per_image: true
+    forbid_collage_and_multi_view_layouts: true
+    design_sheet_default: disabled
+    character:
+      aspect_ratio: '9:16'
+      framing: 单一人物、单一角度、单一状态、全身或剧情所需景别、细腻身份特征
+      required_default_angle: three_quarter_front
+      additional_angles: full_360_eight_direction_for_series_core; on_demand_for_one_off
+      reusable_angle_pack:
+        required_for:
+        - series_core_character
+        - recurring_character
+        angles:
+        - front
+        - front_left_three_quarter
+        - left_profile
+        - rear_left_three_quarter
+        - back
+        - rear_right_three_quarter
+        - right_profile
+        - front_right_three_quarter
+        state: neutral_identity_state
+        one_asset_per_angle: true
+        require_shared_identity_reference: true
+        require_batch_identity_review: true
+    creature:
+      aspect_ratio: '9:16'
+      framing: 单一生物、单一角度、单一状态、完整轮廓和材质细节
+      required_default_angle: three_quarter_front
+      additional_angles: full_360_eight_direction_for_series_core; on_demand_for_one_off
+      reusable_angle_pack:
+        required_for:
+        - pet
+        - companion_creature
+        - recurring_creature
+        angles:
+        - front
+        - front_left_three_quarter
+        - left_profile
+        - rear_left_three_quarter
+        - back
+        - rear_right_three_quarter
+        - right_profile
+        - front_right_three_quarter
+        state: neutral_identity_state
+        one_asset_per_angle: true
+        require_shared_identity_reference: true
+        require_batch_identity_review: true
+        episode_state_assets_are_separate: true
+    location:
+      aspect_ratio: '16:9'
+      framing: 单一环境、单一机位、完整空间关系、无细节小图
+    environment:
+      aspect_ratio: '16:9'
+      framing: 单一环境、单一机位、完整空间关系、无拼接
+    prop:
+      aspect_ratio: '9:16'
+      framing: 单一道具、单一状态、主体充分占画、材质与结构细腻
+    per_asset_required_fields:
+    - asset_role
+    - asset_kind
+    - angle_id
+    - aspect_ratio
+    - layout_type
+  video_reference_safety:
+    enabled: true
+    policy: clean_single_view_only
+    manifest_output: assets/video_reference_manifest.json
+    require_before_video_prompt_gate: true
+    require_before_video_dispatch: true
+    allowed_roles:
+    - video_reference
+    forbidden_roles:
+    - design_sheet
+    - turnaround_sheet
+    - expression_sheet
+    - storyboard_sheet
+    - state_progression_sheet
+    - prop_catalog_sheet
+    - asset_collection_sheet
+    forbidden_visible_features:
+    - 多面板或分栏
+    - 同一主体多角度并列
+    - 多个状态或步骤并列
+    - 缩略图条
+    - 说明文字、标签、箭头或编号
+    - 白边、画框或设定页背景
+    character_reference_rule: 单一角色、单一三分之四视角或剧情所需视角、干净背景、无附加小图
+    location_reference_rule: 单一完整电影画面、无下方细节条或局部放大图
+    prop_reference_rule: 单一道具、单一状态；状态变化必须拆成独立视频参考资产
+    prop_collection_rule: 多种独立物品合集图禁止作为视频参考；每个核心道具单独建立 video_reference
+    prop_group_exception: 仅当多件物品在剧情中始终作为不可拆整体共同出现，且参考图就是最终摆放状态时，允许使用 prop_group
+    require_reference_scope: true
+    allowed_reference_scopes:
+    - character_single
+    - prop_single
+    - prop_group_locked
+    - ui_single_state
+    - location_single_composition
+    forbid_multiple_independent_assets: true
+    ui_reference_rule: 单一最终UI状态、全画面可直接使用；步骤总览页禁止作为视频参考
+    design_sheet_policy: 可选保留用于一致性审核，但永不进入视频 reference bundle
+    hard_block_on_unknown_layout: true
+    environment_scene_continuity:
+      enabled: true
+      adjacent_clip_default: same_physical_space
+      location_change_requires:
+      - explicit_location_change
+      - explicit_time_jump
+      - motivated_transition
+      allow_camera_angle_change_within_same_location: true
+      allow_new_environment_reference_after_travel: true
+      route_anchor_roles:
+      - departure
+      - path
+      - turn
+      - reveal
+      - arrival
+      continuity_map_path: shots/spatial_blocking.json#environment_continuity_map
+      required_fields:
+      - inherited_location_id
+      - predecessor_environment_asset_id
+      - route_anchor_role
+      - character_position
+      - camera_position
+      - camera_view_direction
+      - route_direction
+      - landmark_ids
+      - landmark_world_relationships
+      - expected_screen_position_and_scale
+      - distance_change
+      - landmark_parallax
+      - justified_occlusion
+      landmark_identity_lock:
+      - silhouette_and_geometry
+      - world_side_and_relative_position
+      - terrain_topology
+      - shoreline_path_vegetation_structure_relationships
+      - horizon_and_light_direction
+      allowed_landmark_visibility_changes:
+      - explained_camera_angle
+      - explained_parallax
+      - explained_distance
+      - explained_elevation
+      - explained_framing
+      - explained_occlusion
+      forbid_unexplained_landmark_disappearance_or_mutation: true
+      forbid_scene_reset_without_transition_evidence: true
+      require_gate_before_video_prompt_generation: true
+      require_gate_before_video_dispatch: true
+  auto_continue: true
+  asset_dispatch:
+    enabled: true
+    auto_submit_in_auto_production_mode: true
+    skill: deepwhite-n8n-asset-dispatcher
+    workspace_root: ${OPENCLAW_STATE_DIR}/workspace-drama-producer
+    manifest_path: projects/{project_name}/dispatch/asset_jobs/{job_id}.json
+    status_path: projects/{project_name}/dispatch/last_submission.json
+    submitter_script: scripts/submit_asset_job.py
+    submitter_must_run_render_spec_gate: true
+    require_final_audit_pass: true
+    require_style_contract_for_series: true
+    require_style_contract_sha256_match: true
+    require_negative_prompt_for_series: true
+    require_cross_asset_style_gate: true
+    transport_max_attempts_per_immutable_job: 4
+    semantic_generation_budget:
+      max_attempts_per_asset_lineage_and_requirement: 3
+      includes_initial_attempt: true
+      ledger_path: state/asset_attempt_ledger.json
+      gate_path: gates/asset_retry_budget_gate.json
+      stop_status: held_for_asset_review
+      require_new_prompt_after_rejection: true
+      accepted_asset_blocks_regeneration: true
+    submit_success_http_status:
+    - 200
+    - 201
+    - 202
+    - 204
+    default_job_settings:
+      model: gemini-3.1-flash-image
+      aspect_ratio_source: assets[].aspect_ratio
+      fallback_aspect_ratio_for_nonproduction_reference: project.json#制作规格.画幅比例
+      image_size: 2K
+      review_model: gemini-2.5-flash
+      review_min_score: 80
+      review_max_retries: 2
+    opt_out_phrases:
+    - 只输出提示词
+    - 不要生图
+    - 不要生成图片
+    - 不要发送到n8n
+    - 不要发送到 n8n
+    - 仅制作前期资料
+  video_dispatch:
+    enabled: true
+    auto_submit_in_auto_production_mode: true
+    skill: deepwhite-n8n-video-dispatcher
+    workspace_root: ${OPENCLAW_STATE_DIR}/workspace-drama-producer
+    manifest_path: projects/{project_name}/dispatch/video_jobs/{video_job_id}.json
+    status_path: projects/{project_name}/dispatch/last_video_submission.json
+    require_video_prompt_gate_pass: true
+    require_video_reference_safety_gate_pass: true
+    video_reference_manifest_path: assets/video_reference_manifest.json
+    submitter_script: scripts/submit_video_job.py
+    submitter_must_run_reference_safety_gate: true
+    max_submit_attempts: 4
+    submit_success_http_status:
+    - 200
+    - 201
+    - 202
+    - 204
+    default_job_settings:
+      model: doubao-seedance-2-0-mini-260615
+      resolution: 720p
+      ratio_source: project.json#制作规格.画幅比例
+      generate_audio: true
+      watermark: false
+      max_generation_attempts: 2
+      provider_max_wait_minutes: 180
+    opt_out_phrases:
+    - 只生成提示词
+    - 只要文字提示词
+    - 不要生成视频
+    - 不要发送到n8n
+    - 不要发送到 n8n
+    opt_out_source: explicit_user_message_only
+    internal_delivery_format_is_not_opt_out: true
+workflow:
+  stage_00_initialize:
+    name: Project Initialization and Story Analysis
+    action: [create_project, analyze_story]
+    outputs:
+    - project.json
+    - input/story_analysis.md
+    success_status: initialized
+
+  stage_10_screenplay:
+    name: Stable Scene-ID Screenplay
+    skill: deepwhite-screenwriting-v1
+    inputs:
+    - input/story_analysis.md
+    - input/series_episode_context.json（系列项目）
+    outputs:
+    - script/story_outline.md
+    - script/episode_script.md
+    - script/scene_index.json
+    - review/script_check.md
+    hard_gate:
+    - every_scene_has_stable_scene_id
+    - critical_issues == 0
+    success_status: screenplay_ready
+
+  stage_20_continuity:
+    name: Continuity World State
+    skill: deepwhite-continuity-worldstate-zh
+    inputs: [script/episode_script.md]
+    outputs:
+    - world/characters.json
+    - world/locations.json
+    - world/props.json
+    - continuity/continuity_handoff.json
+    success_status: continuity_ready
+
+  stage_25_scene_asset_plan:
+    name: Deterministic Scene Asset Planning
+    skill: deepwhite-scene-asset-planner
+    inputs:
+    - script/episode_script.md
+    - script/scene_index.json
+    - continuity/continuity_handoff.json
+    - input/series_episode_context.json（系列项目）
+    - assets/actual_asset_manifest.json（已有资产时）
+    outputs:
+    - assets/scene_asset_plan.json
+    - assets/location_asset_requirements.json
+    - handoffs/scene_asset_handoff.json
+    - gates/scene_asset_coverage_gate.json
+    validator: deepwhite-scene-asset-planner/scripts/validate_scene_asset_plan.py
+    validator_args:
+    - --scene-index script/scene_index.json
+    hard_gate:
+    - scene_asset_coverage_gate.passed == true
+    - scene_coverage_ratio == 1.0
+    - primary_binding_ratio == 1.0
+    - authoritative_scene_index_used == true
+    - movement_scene_count == resolved_movement_scene_count
+    success_status: scene_assets_planned
+
+  stage_30_image_prompt:
+    name: Strict Planned-Asset Prompt Compilation
+    skill: deepwhite-image-prompt-builder
+    mode: STRICT_ASSET_PLAN_MODE
+    inputs:
+    - assets/location_asset_requirements.json
+    - handoffs/scene_asset_handoff.json
+    - world/
+    - input/resolved_style_contract.json（系列项目）
+    outputs:
+    - assets/location_asset_prompt_manifest.json
+    - assets/angle_pack_manifest.json
+    - handoffs/image_prompt_handoff.json
+    success_status: image_prompts_ready
+
+  stage_35_image_prompt_gate:
+    name: Location Prompt Manifest Gate
+    validator: deepwhite-image-prompt-builder/scripts/validate_location_prompt_manifest.py
+    inputs:
+    - assets/location_asset_requirements.json
+    - assets/location_asset_prompt_manifest.json
+    output: gates/location_prompt_manifest_gate.json
+    hard_gate:
+    - passed == true
+    - coverage_ratio == 1.0
+    - missing_asset_ids == []
+    - unexpected_asset_ids == []
+    success_status: asset_dispatch_ready
+
+  stage_37_angle_pack_gate:
+    name: Independent Multi-angle Asset Pack Gate
+    validator: deepwhite-image-prompt-builder/scripts/validate_angle_pack.py
+    inputs:
+    - assets/angle_pack_manifest.json
+    output: gates/angle_pack_gate.json
+    hard_gate:
+    - passed == true
+    - each_required_angle_is_one_independent_9_16_asset
+    - design_sheet_is_not_video_reference
+    success_status: angle_pack_validated
+
+  stage_40_asset_dispatch:
+    name: Missing Asset Dispatch to n8n
+    skill: deepwhite-n8n-asset-dispatcher
+    inputs:
+    - project.json
+    - assets/location_asset_prompt_manifest.json
+    - gates/location_prompt_manifest_gate.json
+    - gates/angle_pack_gate.json
+    - input/resolved_style_contract.json（系列项目）
+    outputs:
+    - dispatch/asset_jobs/{job_id}.json
+    - dispatch/last_submission.json
+    - gates/asset_retry_budget_gate.json
+    submit_entrypoint: scripts/submit_asset_job.py
+    idempotency: reuse_job_id_for_same_payload_sha256
+    status_after_http_2xx: webhook_accepted_unverified
+    execution_confirmed_by:
+    - n8n_execution_id
+    - provider_task_id
+    - fixed_job_output_directory
+    - trusted_callback
+    status_after_execution_evidence: waiting_asset_result
+    semantic_retry_policy:
+      key: asset_lineage_id + requirement_sha256
+      max_total_generations: 3
+      same_job_same_payload_transport_retry_does_not_consume_generation_budget: true
+      require_revision_reason_code_after_failure: true
+      stop_after_budget: held_for_asset_review
+    skip_when: generation_requirements_count == 0
+    skip_evidence:
+      path: gates/asset_retry_budget_gate.json
+      required_fields:
+        passed: true
+        skipped: true
+        reason: no_generation_requirements
+    wait_for: n8n_asset_generation_completed
+
+  stage_45_asset_ingest:
+    name: Actual Asset Ingest and Visual Safety Review
+    trigger: n8n_asset_generation_completed
+    inputs:
+    - dispatch/asset_jobs/{job_id}.json
+    - handoffs/scene_asset_handoff.json
+    - ${OPENCLAW_ASSET_ROOT}/{project_id}/{job_id}/result_manifest.json
+    outputs:
+    - assets/actual_asset_manifest.json
+    - assets/observed_asset_state.json
+    - assets/video_reference_manifest.json
+    hard_gate:
+    - callback.status == completed
+    - callback.failed_count == 0
+    - accepted_count == expected_count
+    - every_required_asset_is_readable
+    - video_reference_safety_gate == passed
+    success_status: actual_assets_ready
+
+  stage_50_final_shotlist:
+    name: Final Shotlist from Actual Assets
+    skill: deepwhite-shotlist-builder-zh-user
+    mode: AUTO_GATE_MODE
+    inputs:
+    - script/episode_script.md
+    - continuity/continuity_handoff.json
+    - handoffs/scene_asset_handoff.json
+    - assets/actual_asset_manifest.json
+    - assets/observed_asset_state.json
+    outputs:
+    - shots/shotlist.md
+    - shots/shot_scene_bindings.json
+    - shots/spatial_blocking.json
+    - shots/timing_plan.json
+    - review/video_prompt_gate_review.json
+    - video_prompts/video_prompt_sheet.md
+    - video_prompts/video_prompt_manifest.json
+    success_status: shotlist_ready
+
+  stage_52_environment_continuity_gate:
+    name: Route Anchor Environment Continuity Gate
+    validator: deepwhite-shotlist-builder-zh-user/scripts/validate_environment_continuity.py
+    inputs:
+    - handoffs/scene_asset_handoff.json
+    - assets/actual_asset_manifest.json
+    - shots/spatial_blocking.json
+    output: gates/environment_continuity_gate.json
+    hard_gate:
+    - passed == true
+    - route_anchor_coverage_ratio == 1.0
+    - every_nonfirst_anchor_has_verified_predecessor_reference
+    - landmark_world_relationships_do_not_mutate_without_explanation
+    success_status: environment_continuity_passed
+
+  stage_55_shot_binding_gate:
+    name: Shot and Prompt Scene Binding Gate
+    validator: deepwhite-shotlist-builder-zh-user/scripts/validate_shot_scene_bindings.py
+    inputs:
+    - handoffs/scene_asset_handoff.json
+    - script/scene_index.json
+    - assets/actual_asset_manifest.json
+    - gates/environment_continuity_gate.json
+    - shots/shot_scene_bindings.json
+    - video_prompts/video_prompt_manifest.json
+    output: gates/shot_scene_binding_gate.json
+    hard_gate:
+    - passed == true
+    - scene_coverage_ratio == 1.0
+    - shot_binding_ratio == 1.0
+    - prompt_binding_ratio == 1.0
+    - authoritative_scene_index_used == true
+    success_status: shot_binding_passed
+
+  stage_60_transition:
+    name: Required Boundary Transition Bridges
+    skill: deepwhite-shot-transition-builder-zh
+    optional: true
+    run_when: transition_need_count > 0
+    inputs:
+    - shots/shotlist.md
+    - shots/shot_scene_bindings.json
+    - continuity/continuity_handoff.json
+    outputs:
+    - transition/transition_plan.md
+    constraint: must_not_change_scene_or_location_binding
+    on_prompt_change: rerun_stage_55
+    success_status: transition_ready
+
+  stage_65_video_prompt_ready:
+    name: Final Video Prompt Readiness
+    inputs:
+    - gates/shot_scene_binding_gate.json
+    - gates/environment_continuity_gate.json
+    - review/video_prompt_gate_review.json
+    - video_prompts/video_prompt_manifest.json
+    - transition/transition_plan.md（存在时）
+    hard_gate:
+    - shot_scene_binding_gate.passed == true
+    - ready_for_video_prompt_generation == true
+    - timing_plan_total == resolved_duration_seconds
+    success_status: video_prompts_ready
+
+  stage_70_video_dispatch:
+    name: Video Job Dispatch to n8n
+    skill: deepwhite-n8n-video-dispatcher
+    inputs:
+    - project.json
+    - handoffs/scene_asset_handoff.json
+    - assets/actual_asset_manifest.json
+    - assets/video_reference_manifest.json
+    - gates/shot_scene_binding_gate.json
+    - video_prompts/video_prompt_manifest.json
+    outputs:
+    - gates/video_scene_binding_gate.json
+    - dispatch/video_jobs/{video_job_id}.json
+    - dispatch/last_video_submission.json
+    submit_entrypoint: scripts/submit_video_job.py
+    idempotency: reuse_video_job_id_for_same_payload_sha256
+    status_after_http_2xx: webhook_accepted_unverified
+    execution_confirmed_by:
+    - n8n_execution_id
+    - provider_task_id
+    - fixed_job_output_directory
+    - trusted_callback
+    status_after_execution_evidence: waiting_video_result
+    wait_for: [n8n_video_generation_completed, n8n_final_video_composed]
+
+  stage_80_video_result:
+    name: Video Result Ingest
+    trigger: n8n_video_generation_completed
+    failure_status: video_generation_failed
+    success_status: video_clips_ready
+
+  stage_90_final_composition:
+    name: Final Composition Verification
+    trigger: n8n_final_video_composed
+    inputs:
+    - dispatch/video_jobs/{video_job_id}.json
+    - ${OPENCLAW_ASSET_ROOT}/{project_id}/video_jobs/{video_job_id}/video_result_manifest.json
+    - ${OPENCLAW_ASSET_ROOT}/{project_id}/video_jobs/{video_job_id}/final_video_manifest.json
+    outputs:
+    - video/video_result_manifest.json
+    - video/final_video_manifest.json
+    - video/final_video_ingest_report.md
+    hard_gate:
+    - callback.status == completed
+    - composed_marker_exists
+    - final_video_readable == true
+    - final_video_sha256_matches == true
+    success_status: final_video_ready
+    failure_status: video_compose_failed
+
+  stage_95_pipeline_evidence:
+    name: Episode Pipeline Evidence
+    validator: deepwhite-00-novel-series-orchestrator/scripts/validate_episode_pipeline.py
+    run_when: series_project == true
+    output: review/series_pipeline_evidence.json
+    hard_gate: passed == true
+
+  stage_100_series_commit:
+    name: Commit Episode to Series
+    run_when: series_project == true
+    inputs:
+    - video/final_video_manifest.json
+    - world/series_continuity_out.json
+    - assets/series_asset_delta.json
+    - review/series_pipeline_evidence.json
+    idempotency_marker: state/series_commit.done
+    dispatch_next_requires_explicit_user_command: true
+human_review:
+  required_before:
+  - external_publish
+  - material_change_to_user_locked_story_or_style
+  - unresolved_critical_after_two_revisions
+  not_required_before:
+  - asset_job_json_creation
+  - n8n_asset_dispatch
+  - n8n_image_generation
+  - n8n_asset_result_ingest
+  - actual_asset_observation
+  - asset_confirmation_gate
+  - spatial_confirmation_gate
+  - timing_confirmation_gate
+  - video_prompt_generation
+  - video_job_json_creation
+  - n8n_video_dispatch
+  - n8n_video_generation
+  - n8n_video_result_ingest
+
+# DEEPWHITE_NOVEL_SERIES_ADDON_BEGIN
+series_orchestration:
+  enabled: true
+  event: deepwhite_series_episode_ready
+  fixed_context_path: input/series_episode_context.json
+  required_validation:
+    - series_id_matches
+    - episode_project_id_matches
+    - episode_number_matches
+    - context_sha256_matches
+    - style_handoff_exists
+    - style_handoff_authority_is_drama_producer
+    - style_handoff_sha256_matches
+    - user_locked_request_is_exact_passthrough
+    - ai_gate_is_not_user_confirmation
+  style_handoff_gate:
+    validator: ${OPENCLAW_STATE_DIR}/workspace-novel-producer/scripts/validate_style_handoff.py
+    resolved_contract_path: input/resolved_style_contract.json
+    asset_job_requirements:
+      - top_level_style_contract
+      - matching_style_contract_sha256
+      - per_asset_style_hard_constraint_prefix
+      - per_asset_negative_prompt
+      - cross_asset_actual_image_style_review
+  continuity_inputs:
+    - series_world_state
+    - series_asset_registry
+    - resolved_reuse_assets
+  asset_reuse_gate:
+    mode: strict_series_asset_reuse_v1.2
+    canonical_root: series_assets
+    require_file_size_match: true
+    require_sha256_match: true
+    requested_assets_file: assets/requested_assets.json
+    generation_plan_file: assets/asset_generation_plan.json
+    submit_only_field: generation_assets
+    skip_n8n_when_generation_count_zero: true
+  stage_100_series_commit:
+    run_after:
+      - stage_90_final_composition
+      - stage_95_pipeline_evidence
+    required_outputs:
+      - world/series_continuity_out.json
+      - assets/series_asset_delta.json
+    idempotency_marker: state/series_commit.done
+    command: series_orchestrator.py complete
+    dispatch_policy: manual_user_command_only
+    dispatch_next_requires_explicit_user_command: true
+    on_terminal_failure: pause_series
+    auto_retry_whole_episode: false
+# DEEPWHITE_NOVEL_SERIES_ADDON_END

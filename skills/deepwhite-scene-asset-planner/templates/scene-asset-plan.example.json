@@ -1,0 +1,196 @@
+{
+  "schema_version": "1.0",
+  "project_id": "DEMO",
+  "episode_project_id": "demo_s01e001",
+  "plan_id": "demo_s01e001_scene_assets_v001",
+  "format_profile": "domestic_vertical_manga",
+  "aspect_ratio": "9:16",
+  "source": {
+    "screenplay": "script/final_screenplay.md",
+    "continuity_handoff": "continuity/continuity_handoff.json",
+    "asset_registry": "asset_registry.json"
+  },
+  "policy": {
+    "same_background_soft_limit_seconds": 24,
+    "same_background_hard_limit_seconds": 35,
+    "allow_editorial_sublocation_enrichment": true,
+    "require_100_percent_scene_coverage": true
+  },
+  "locations": [
+    {
+      "location_id": "LOC-LIN-HOME",
+      "canonical_name": "林家",
+      "location_type": "residence",
+      "narrative_identity": "林满仓一家居住的普通农家院落",
+      "identity_fingerprint": "lin-home-rural-courtyard-earthwall-timber-v1",
+      "source_scene_ids": ["SC01", "SC02"],
+      "existing_registry_match": "AST-LOC-LIN-HOME-LIVINGROOM-DAY"
+    },
+    {
+      "location_id": "LOC-VILLAGE-ENTRANCE",
+      "canonical_name": "村口",
+      "location_type": "village_public",
+      "narrative_identity": "村落通往官道的入口，大槐树为固定地标",
+      "identity_fingerprint": "village-entrance-old-locust-dirt-road-v1",
+      "source_scene_ids": ["SC03"],
+      "existing_registry_match": null
+    },
+    {
+      "location_id": "LOC-MARKET",
+      "canonical_name": "青石集市",
+      "location_type": "market",
+      "narrative_identity": "附近村镇交易集市，青石主街和木构铺面",
+      "identity_fingerprint": "market-stone-road-timber-shops-v1",
+      "source_scene_ids": ["SC04", "SC05"],
+      "existing_registry_match": null
+    }
+  ],
+  "sub_locations": [
+    {
+      "sub_location_id": "SUBLOC-LIN-HOME-LIVINGROOM",
+      "location_id": "LOC-LIN-HOME",
+      "canonical_name": "林家堂屋",
+      "spatial_role": "indoor_main_room",
+      "spatial_identity": "木桌居中、土墙、正门朝院子",
+      "identity_fingerprint": "lin-home-livingroom-center-table-earthwall-v1",
+      "source_scene_ids": ["SC01"]
+    },
+    {
+      "sub_location_id": "SUBLOC-LIN-HOME-COURTYARD",
+      "location_id": "LOC-LIN-HOME",
+      "canonical_name": "林家庭院",
+      "spatial_role": "courtyard",
+      "spatial_identity": "夯土地面、晾衣木架、正屋入口",
+      "identity_fingerprint": "lin-home-courtyard-earth-yard-main-door-v1",
+      "source_scene_ids": ["SC02"]
+    },
+    {
+      "sub_location_id": "SUBLOC-VILLAGE-ENTRANCE-TREE",
+      "location_id": "LOC-VILLAGE-ENTRANCE",
+      "canonical_name": "村口老槐树",
+      "spatial_role": "meeting_point",
+      "spatial_identity": "大槐树、土路、村口石碑",
+      "identity_fingerprint": "village-entrance-old-tree-stone-marker-v1",
+      "source_scene_ids": ["SC03"]
+    },
+    {
+      "sub_location_id": "SUBLOC-MARKET-ENTRANCE",
+      "location_id": "LOC-MARKET",
+      "canonical_name": "集市入口",
+      "spatial_role": "market_gateway",
+      "spatial_identity": "青石主街起点，两侧木铺，远处人群",
+      "identity_fingerprint": "market-entrance-stone-road-shops-v1",
+      "source_scene_ids": ["SC04"]
+    },
+    {
+      "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+      "location_id": "LOC-MARKET",
+      "canonical_name": "集市盐摊",
+      "spatial_role": "trade_stall",
+      "spatial_identity": "粗布遮棚、木盐斗、麻袋、右侧摊台",
+      "identity_fingerprint": "market-salt-stall-awning-sacks-salt-bin-v1",
+      "source_scene_ids": ["SC05"]
+    }
+  ],
+  "location_assets": [
+    {
+      "asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY",
+      "category": "location",
+      "name": "林家堂屋·白天",
+      "location_id": "LOC-LIN-HOME",
+      "sub_location_id": "SUBLOC-LIN-HOME-LIVINGROOM",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "variant": {"time_of_day": "day", "weather": "clear", "environment_state": "normal", "occupancy_state": "neutral"},
+      "identity_fingerprint": "lin-home-livingroom-center-table-earthwall-v1",
+      "decision": "reuse_exact",
+      "registry_status": "verified",
+      "scene_ids": ["SC01"],
+      "generation_required": false
+    },
+    {
+      "asset_id": "AST-LOC-LIN-HOME-COURTYARD-DAY",
+      "category": "location",
+      "name": "林家庭院·白天",
+      "location_id": "LOC-LIN-HOME",
+      "sub_location_id": "SUBLOC-LIN-HOME-COURTYARD",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "variant": {"time_of_day": "day", "weather": "clear", "environment_state": "normal", "occupancy_state": "neutral"},
+      "identity_fingerprint": "lin-home-courtyard-earth-yard-main-door-v1",
+      "decision": "generate_new_sublocation",
+      "registry_status": "not_registered",
+      "scene_ids": ["SC02"],
+      "generation_required": true
+    },
+    {
+      "asset_id": "AST-LOC-VILLAGE-ENTRANCE-DAY",
+      "category": "location",
+      "name": "村口老槐树·白天",
+      "location_id": "LOC-VILLAGE-ENTRANCE",
+      "sub_location_id": "SUBLOC-VILLAGE-ENTRANCE-TREE",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "variant": {"time_of_day": "day", "weather": "clear", "environment_state": "normal", "occupancy_state": "neutral"},
+      "identity_fingerprint": "village-entrance-old-tree-stone-marker-v1",
+      "decision": "generate_new_location",
+      "registry_status": "not_registered",
+      "scene_ids": ["SC03"],
+      "generation_required": true
+    },
+    {
+      "asset_id": "AST-LOC-MARKET-ENTRANCE-DAY",
+      "category": "location",
+      "name": "青石集市入口·白天",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-ENTRANCE",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "variant": {"time_of_day": "day", "weather": "clear", "environment_state": "busy_market", "occupancy_state": "busy"},
+      "identity_fingerprint": "market-entrance-stone-road-shops-v1",
+      "decision": "generate_new_location",
+      "registry_status": "not_registered",
+      "scene_ids": ["SC04"],
+      "generation_required": true
+    },
+    {
+      "asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "category": "location",
+      "name": "青石集市盐摊·白天",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "variant": {"time_of_day": "day", "weather": "clear", "environment_state": "busy_market", "occupancy_state": "busy"},
+      "identity_fingerprint": "market-salt-stall-awning-sacks-salt-bin-v1",
+      "decision": "generate_new_sublocation",
+      "registry_status": "not_registered",
+      "scene_ids": ["SC05"],
+      "generation_required": true
+    }
+  ],
+  "scene_bindings": [
+    {"scene_id": "SC01", "source_scene_label": "1. 内景·林家堂屋·日", "scene_order": 1, "narrative_location_text": "林家堂屋", "location_id": "LOC-LIN-HOME", "sub_location_id": "SUBLOC-LIN-HOME-LIVINGROOM", "primary_location_asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY", "supporting_location_asset_ids": [], "time_of_day": "day", "weather": "clear", "environment_state": "normal", "characters": ["CHAR-LIN-MANCHANG"], "story_function": "得知家中缺粮", "expected_duration_seconds": 16, "location_change_from_previous": false, "visual_change_type": "episode_open", "binding_reason": "场次发生在林家堂屋", "single_location_justification": null},
+    {"scene_id": "SC02", "source_scene_label": "2. 外景·林家庭院·日", "scene_order": 2, "narrative_location_text": "林家庭院", "location_id": "LOC-LIN-HOME", "sub_location_id": "SUBLOC-LIN-HOME-COURTYARD", "primary_location_asset_id": "AST-LOC-LIN-HOME-COURTYARD-DAY", "supporting_location_asset_ids": [], "time_of_day": "day", "weather": "clear", "environment_state": "normal", "characters": ["CHAR-LIN-MANCHANG"], "story_function": "收拾东西出门", "expected_duration_seconds": 9, "location_change_from_previous": true, "visual_change_type": "sublocation_change", "binding_reason": "人物从堂屋进入庭院", "single_location_justification": null},
+    {"scene_id": "SC03", "source_scene_label": "3. 外景·村口·日", "scene_order": 3, "narrative_location_text": "村口老槐树", "location_id": "LOC-VILLAGE-ENTRANCE", "sub_location_id": "SUBLOC-VILLAGE-ENTRANCE-TREE", "primary_location_asset_id": "AST-LOC-VILLAGE-ENTRANCE-DAY", "supporting_location_asset_ids": [], "time_of_day": "day", "weather": "clear", "environment_state": "normal", "characters": ["CHAR-LIN-MANCHANG", "CHAR-ZHAO-UNCLE"], "story_function": "赵叔让他去集市买盐", "expected_duration_seconds": 18, "location_change_from_previous": true, "visual_change_type": "hard_location_change", "binding_reason": "叙事地点从林家切到村口", "single_location_justification": null},
+    {"scene_id": "SC04", "source_scene_label": "4. 外景·青石集市入口·日", "scene_order": 4, "narrative_location_text": "青石集市入口", "location_id": "LOC-MARKET", "sub_location_id": "SUBLOC-MARKET-ENTRANCE", "primary_location_asset_id": "AST-LOC-MARKET-ENTRANCE-DAY", "supporting_location_asset_ids": [], "time_of_day": "day", "weather": "clear", "environment_state": "busy_market", "characters": ["CHAR-LIN-MANCHANG"], "story_function": "进入集市", "expected_duration_seconds": 8, "location_change_from_previous": true, "visual_change_type": "hard_location_change", "binding_reason": "人物从村口到集市", "single_location_justification": null},
+    {"scene_id": "SC05", "source_scene_label": "5. 外景·青石集市盐摊·日", "scene_order": 5, "narrative_location_text": "青石集市盐摊", "location_id": "LOC-MARKET", "sub_location_id": "SUBLOC-MARKET-SALT-STALL", "primary_location_asset_id": "AST-LOC-MARKET-SALT-STALL-DAY", "supporting_location_asset_ids": [], "time_of_day": "day", "weather": "clear", "environment_state": "busy_market", "characters": ["CHAR-LIN-MANCHANG"], "story_function": "发现盐价涨三倍", "expected_duration_seconds": 19, "location_change_from_previous": true, "visual_change_type": "sublocation_change", "binding_reason": "从集市入口进入盐摊交易区", "single_location_justification": null}
+  ],
+  "summary": {
+    "scene_count": 5,
+    "location_count": 3,
+    "sub_location_count": 5,
+    "location_asset_count": 5,
+    "reuse_asset_count": 1,
+    "generation_asset_count": 4,
+    "scene_coverage_ratio": 1.0,
+    "primary_binding_ratio": 1.0,
+    "longest_same_background_seconds": 19,
+    "visual_variety_risk": "low"
+  }
+}

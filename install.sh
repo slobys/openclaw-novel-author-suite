@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="0.4.5"
+SUITE_VERSION="1.0.0"
 REPOSITORY="slobys/openclaw-novel-author-suite"
-REF="${NOVEL_SUITE_REF:-v${SUITE_VERSION}}"
+REF="${DRAMA_SUITE_REF:-drama-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
-WORKSPACE_OVERRIDE="${NOVEL_AUTHOR_WORKSPACE:-}"
-WORKSPACE_DIR="${WORKSPACE_OVERRIDE:-${STATE_DIR}/workspace-novel-author}"
-BACKUP_ROOT="${STATE_DIR}/backups/novel-author-suite"
-SOURCE_DIR="${NOVEL_SUITE_SOURCE_DIR:-}"
+SKILLS_DIR="${OPENCLAW_SKILLS_DIR:-${STATE_DIR}/skills}"
+NOVEL_WORKSPACE_OVERRIDE="${NOVEL_PRODUCER_WORKSPACE:-}"
+DRAMA_WORKSPACE_OVERRIDE="${DRAMA_PRODUCER_WORKSPACE:-}"
+NOVEL_WORKSPACE="${NOVEL_WORKSPACE_OVERRIDE:-${STATE_DIR}/workspace-novel-producer}"
+DRAMA_WORKSPACE="${DRAMA_WORKSPACE_OVERRIDE:-${STATE_DIR}/workspace-drama-producer}"
+BACKUP_ROOT="${STATE_DIR}/backups/drama-pipeline-suite"
+SOURCE_DIR="${DRAMA_SUITE_SOURCE_DIR:-}"
 TEMP_DIR=""
 
-log() { printf '[novel-author-suite] %s\n' "$*"; }
-die() { printf '[novel-author-suite] ERROR: %s\n' "$*" >&2; exit 1; }
+log() { printf '[drama-pipeline-suite] %s\n' "$*"; }
+die() { printf '[drama-pipeline-suite] ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
 cleanup() {
   if [[ -n "${TEMP_DIR}" && -d "${TEMP_DIR}" ]]; then
     case "${TEMP_DIR}" in
-      "${TMPDIR:-/tmp}"/novel-author-suite.*) rm -rf -- "${TEMP_DIR}" ;;
+      "${TMPDIR:-/tmp}"/drama-pipeline-suite.*) rm -rf -- "${TEMP_DIR}" ;;
     esac
   fi
 }
@@ -27,13 +30,15 @@ trap cleanup EXIT
 need openclaw
 need curl
 need tar
-need git
 need node
 
 agents_json="$(openclaw agents list --json)" || die "Cannot read the OpenClaw agent roster. Run: openclaw config validate"
-existing_workspace="$(
+
+find_agent_workspace() {
+  local agent_id="$1"
   printf '%s' "${agents_json}" | node -e '
     let input = "";
+    const wanted = process.argv[1];
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => { input += chunk; });
     process.stdin.on("end", () => {
@@ -45,82 +50,105 @@ existing_workspace="$(
           : Array.isArray(parsed.list)
             ? parsed.list
             : [];
-      const found = agents.find((item) => item && (item.id === "novel-author" || item.agentId === "novel-author"));
+      const found = agents.find((item) => item && (item.id === wanted || item.agentId === wanted));
       if (found && typeof found.workspace === "string") process.stdout.write(found.workspace);
     });
-  '
-)" || die "Cannot parse the OpenClaw agent roster."
+  ' "${agent_id}"
+}
 
-agent_exists=0
-if [[ -n "${existing_workspace}" ]]; then
-  agent_exists=1
-  if [[ -n "${WORKSPACE_OVERRIDE}" && "${WORKSPACE_OVERRIDE}" != "${existing_workspace}" ]]; then
-    die "novel-author already uses ${existing_workspace}; NOVEL_AUTHOR_WORKSPACE points to ${WORKSPACE_OVERRIDE}."
+novel_existing="$(find_agent_workspace novel-producer)" || die "Cannot parse novel-producer from the agent roster."
+drama_existing="$(find_agent_workspace drama-producer)" || die "Cannot parse drama-producer from the agent roster."
+novel_exists=0
+drama_exists=0
+
+if [[ -n "${novel_existing}" ]]; then
+  novel_exists=1
+  if [[ -n "${NOVEL_WORKSPACE_OVERRIDE}" && "${NOVEL_WORKSPACE_OVERRIDE}" != "${novel_existing}" ]]; then
+    die "novel-producer already uses ${novel_existing}; NOVEL_PRODUCER_WORKSPACE points to ${NOVEL_WORKSPACE_OVERRIDE}."
   fi
-  WORKSPACE_DIR="${existing_workspace}"
-  log "Using existing novel-author workspace: ${WORKSPACE_DIR}"
+  NOVEL_WORKSPACE="${novel_existing}"
+  log "Using existing novel-producer workspace: ${NOVEL_WORKSPACE}"
 fi
 
-case "${WORKSPACE_DIR}" in
-  /|"${HOME}"|"${STATE_DIR}") die "Unsafe workspace target: ${WORKSPACE_DIR}" ;;
-esac
+if [[ -n "${drama_existing}" ]]; then
+  drama_exists=1
+  if [[ -n "${DRAMA_WORKSPACE_OVERRIDE}" && "${DRAMA_WORKSPACE_OVERRIDE}" != "${drama_existing}" ]]; then
+    die "drama-producer already uses ${drama_existing}; DRAMA_PRODUCER_WORKSPACE points to ${DRAMA_WORKSPACE_OVERRIDE}."
+  fi
+  DRAMA_WORKSPACE="${drama_existing}"
+  log "Using existing drama-producer workspace: ${DRAMA_WORKSPACE}"
+fi
+
+for target in "${NOVEL_WORKSPACE}" "${DRAMA_WORKSPACE}" "${SKILLS_DIR}"; do
+  case "${target}" in
+    /|"${HOME}"|"${STATE_DIR}") die "Unsafe install target: ${target}" ;;
+  esac
+done
 
 if [[ -z "${SOURCE_DIR}" ]]; then
-  TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/novel-author-suite.XXXXXX")"
+  TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/drama-pipeline-suite.XXXXXX")"
   log "Downloading ${REPOSITORY}@${REF}"
   curl -fsSL "https://github.com/${REPOSITORY}/archive/${REF}.tar.gz" \
     | tar -xz -C "${TEMP_DIR}" --strip-components=1
   SOURCE_DIR="${TEMP_DIR}"
 fi
 
-[[ -f "${SOURCE_DIR}/openclaw.plugin.json" ]] || die "Plugin manifest not found in ${SOURCE_DIR}"
-[[ -d "${SOURCE_DIR}/workspace-novel-author" ]] || die "Workspace template not found in ${SOURCE_DIR}"
+[[ -d "${SOURCE_DIR}/workspaces/novel-producer" ]] || die "novel-producer template not found in ${SOURCE_DIR}"
+[[ -d "${SOURCE_DIR}/workspaces/drama-producer" ]] || die "drama-producer template not found in ${SOURCE_DIR}"
+[[ -d "${SOURCE_DIR}/skills/deepwhite-00-novel-series-orchestrator" ]] || die "DeepWhite skill chain not found in ${SOURCE_DIR}"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_dir="${BACKUP_ROOT}/${timestamp}"
-mkdir -p "${WORKSPACE_DIR}" "${backup_dir}"
+mkdir -p "${NOVEL_WORKSPACE}" "${DRAMA_WORKSPACE}" "${SKILLS_DIR}" "${backup_dir}"
 
-log "Installing workspace into ${WORKSPACE_DIR}"
-while IFS= read -r -d '' source_file; do
-  relative="${source_file#${SOURCE_DIR}/workspace-novel-author/}"
-  case "/${relative}/" in
-    */memory/*|*/exports/*|*/.novel-runtime/*|*/__pycache__/*) continue ;;
-  esac
-  target_file="${WORKSPACE_DIR}/${relative}"
-  if [[ -f "${target_file}" ]]; then
-    mkdir -p "${backup_dir}/$(dirname "${relative}")"
-    cp -p -- "${target_file}" "${backup_dir}/${relative}"
-  fi
-  mkdir -p "$(dirname "${target_file}")"
-  cp -p -- "${source_file}" "${target_file}"
-done < <(find "${SOURCE_DIR}/workspace-novel-author" -type f -print0)
+install_tree() {
+  local source_root="$1"
+  local target_root="$2"
+  local backup_group="$3"
+  while IFS= read -r -d '' source_file; do
+    local relative="${source_file#${source_root}/}"
+    case "/${relative}/" in
+      */memory/*|*/projects/*|*/output/*|*/.learnings/*|*/.novel-runtime/*|*/sessions/*|*/__pycache__/*) continue ;;
+    esac
+    case "${relative}" in
+      *.pyc|*.pyo|*.bak*) continue ;;
+    esac
+    local target_file="${target_root}/${relative}"
+    if [[ -f "${target_file}" ]]; then
+      mkdir -p "${backup_dir}/${backup_group}/$(dirname "${relative}")"
+      cp -p -- "${target_file}" "${backup_dir}/${backup_group}/${relative}"
+    fi
+    mkdir -p "$(dirname "${target_file}")"
+    cp -p -- "${source_file}" "${target_file}"
+  done < <(find "${source_root}" -type f -print0)
+}
 
-plugin_source="${NOVEL_PLUGIN_SOURCE:-git:github.com/${REPOSITORY}@${REF}}"
-log "Installing plugin from ${plugin_source}"
-openclaw plugins install "${plugin_source}" --force
-openclaw plugins enable novel-engine
+log "Installing novel-producer workspace into ${NOVEL_WORKSPACE}"
+install_tree "${SOURCE_DIR}/workspaces/novel-producer" "${NOVEL_WORKSPACE}" "workspace-novel-producer"
 
-if [[ "${agent_exists}" != "1" ]]; then
-  log "Creating novel-author agent"
-  openclaw agents add novel-author --workspace "${WORKSPACE_DIR}" --non-interactive
+log "Installing drama-producer workspace into ${DRAMA_WORKSPACE}"
+install_tree "${SOURCE_DIR}/workspaces/drama-producer" "${DRAMA_WORKSPACE}" "workspace-drama-producer"
+
+log "Installing DeepWhite skills into ${SKILLS_DIR}"
+while IFS= read -r -d '' skill_root; do
+  skill_name="$(basename "${skill_root}")"
+  install_tree "${skill_root}" "${SKILLS_DIR}/${skill_name}" "skills/${skill_name}"
+done < <(find "${SOURCE_DIR}/skills" -mindepth 1 -maxdepth 1 -type d -print0)
+
+if [[ "${novel_exists}" != "1" ]]; then
+  log "Creating novel-producer agent"
+  openclaw agents add novel-producer --workspace "${NOVEL_WORKSPACE}" --non-interactive
+fi
+if [[ "${drama_exists}" != "1" ]]; then
+  log "Creating drama-producer agent"
+  openclaw agents add drama-producer --workspace "${DRAMA_WORKSPACE}" --non-interactive
 fi
 
-openclaw agents set-identity --agent novel-author --from-identity >/dev/null 2>&1 || true
-
-log "Applying safe public defaults"
-openclaw config set plugins.entries.novel-engine.config.minChapterHanChars 2000 --strict-json
-openclaw config set plugins.entries.novel-engine.config.targetChapterHanChars 2600 --strict-json
-openclaw config set plugins.entries.novel-engine.config.targetChapterHanCharsMax 3200 --strict-json
-openclaw config set plugins.entries.novel-engine.config.requireChapterAudit true --strict-json
-openclaw config set plugins.entries.novel-engine.config.requireCompleteAuditChecks true --strict-json
-openclaw config set plugins.entries.novel-engine.config.requireQualityGate true --strict-json
-openclaw config set plugins.entries.novel-engine.config.requireRevisionAudit true --strict-json
-openclaw config set plugins.entries.novel-engine.config.requireRevisionCas true --strict-json
-openclaw config set plugins.entries.novel-engine.config.requireClosureReceipt true --strict-json
-openclaw config set plugins.entries.novel-engine.config.rejectEmbeddedChapterHeading true --strict-json
+openclaw agents set-identity --agent novel-producer --from-identity >/dev/null 2>&1 || true
+openclaw agents set-identity --agent drama-producer --from-identity >/dev/null 2>&1 || true
 openclaw config validate
 
-if [[ "${NOVEL_SKIP_GATEWAY_RESTART:-0}" != "1" ]]; then
+if [[ "${DRAMA_SUITE_SKIP_GATEWAY_RESTART:-0}" != "1" ]]; then
   log "Restarting Gateway"
   if openclaw gateway restart --help 2>&1 | grep -q -- '--safe'; then
     openclaw gateway restart --safe
@@ -129,10 +157,8 @@ if [[ "${NOVEL_SKIP_GATEWAY_RESTART:-0}" != "1" ]]; then
   fi
 fi
 
-if ! openclaw plugins inspect novel-engine --runtime --json >/dev/null 2>&1; then
-  log "Runtime inspection is not ready yet. If restart was deferred, run: openclaw plugins inspect novel-engine --runtime --json"
-fi
-
-log "Installed Novel Engine ${SUITE_VERSION} and Novel Author V5.3.2"
+log "Installed Drama Pipeline Suite ${SUITE_VERSION}"
 log "Workspace backup: ${backup_dir}"
-log "Novel data was not modified. Open the novel-author agent to begin."
+log "Projects, memory, output and sessions were not modified."
+log "Next: configure OPENCLAW_ASSET_ROOT and your n8n webhook URLs, then open novel-producer."
+

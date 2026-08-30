@@ -1,0 +1,8 @@
+interface:
+  display_name: "DeepWhite Shotlist Builder ZH User"
+  short_description: "DeepWhite 场景绑定分镜与 Seedance 提示词"
+  brand_color: "#ef4444"
+  default_prompt: "Use $deepwhite-shotlist-builder-zh-user to turn my screenplay into scene-asset-bound Chinese Seedance 2.0 shotlist prompts and a dispatcher-ready video prompt manifest."
+
+policy:
+  allow_implicit_invocation: true

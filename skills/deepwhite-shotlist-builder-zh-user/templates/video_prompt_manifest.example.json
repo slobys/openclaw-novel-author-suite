@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "project_id": "DEMO",
+  "source_scene_asset_plan_id": "demo_s01e001_scene_assets_v001",
+  "source_asset_job_id": "demo_assets_20260827_001",
+  "clips": [
+    {
+      "clip_id": "VP001",
+      "scene_id": "SC01",
+      "location_id": "LOC-LIN-HOME",
+      "sub_location_id": "SUBLOC-LIN-HOME-LIVINGROOM",
+      "location_asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY",
+      "background_reference_mode": "location_asset",
+      "shot_ids": [
+        "SH001",
+        "SH002"
+      ],
+      "duration": 8,
+      "reference_asset_ids": [
+        "AST-CH-LIN-MANCHANG",
+        "AST-LOC-LIN-HOME-LIVINGROOM-DAY"
+      ],
+      "prompt": "不要出现BGM，不要出现字幕。示例：林满仓坐在木桌旁听母亲说话……"
+    },
+    {
+      "clip_id": "VP002",
+      "scene_id": "SC03",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+      "location_asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "background_reference_mode": "location_asset",
+      "shot_ids": [
+        "SH008"
+      ],
+      "duration": 6,
+      "reference_asset_ids": [
+        "AST-CH-LIN-MANCHANG",
+        "AST-LOC-MARKET-SALT-STALL-DAY"
+      ],
+      "prompt": "不要出现BGM，不要出现字幕。示例：林满仓站在盐摊前看向价格牌……"
+    }
+  ]
+}

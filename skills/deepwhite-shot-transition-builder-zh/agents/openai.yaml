@@ -1,0 +1,8 @@
+interface:
+  display_name: "DeepWhite Shot Transition Builder ZH"
+  short_description: "中文镜头动作桥与视频片段衔接设计"
+  brand_color: "#0ea5e9"
+  default_prompt: "Use $deepwhite-shot-transition-builder-zh to create confirmed Chinese transition bridges between these adjacent shots."
+
+policy:
+  allow_implicit_invocation: true

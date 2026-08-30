@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeepWhite Image Prompt Builder V2"
+  short_description: "Create bilingual still prompts; strictly honor upstream asset plans."
+  default_prompt: "Use $deepwhite-image-prompt-builder to create English and Chinese static-image prompts. If assets/location_asset_requirements.json or generation_requirements[] is present, enter STRICT_ASSET_PLAN_MODE: convert every generation requirement one-to-one, preserve all IDs and scene/location bindings, exclude reuse assets, write the prompt manifest, and pass the deterministic prompt coverage gate before handoff to n8n."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeepWhite n8n 视频派发 V2"
+  short_description: "强制场景资产绑定 Gate 后，将已审核视频任务安全派发到 n8n"
+  default_prompt: "Use $deepwhite-n8n-video-dispatcher to validate scene-to-location asset bindings, package approved DeepWhite video prompts, and dispatch them to n8n only after the deterministic binding gate passes."

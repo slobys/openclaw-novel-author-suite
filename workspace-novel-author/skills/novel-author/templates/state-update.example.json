@@ -1,9 +1,0 @@
-{
-  "projectId": "PROJECT_ID",
-  "chapterNo": 21,
-  "bodySha256": "REPLACE_WITH_64_HEX",
-  "characters": [{"characterId": "hero", "locationId": "location-1", "health": "ok"}],
-  "knowledge": [{"knowledgeKey": "hero::fact-1", "knowerId": "hero", "factId": "fact-1", "status": "known", "sourceRef": "chapter:21"}],
-  "inventory": [{"itemId": "item-1", "holderId": "hero", "status": "intact"}],
-  "locations": [{"locationId": "location-1", "status": "open"}]
-}

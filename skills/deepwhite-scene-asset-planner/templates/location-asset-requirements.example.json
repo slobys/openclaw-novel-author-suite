@@ -1,0 +1,109 @@
+{
+  "schema_version": "1.0",
+  "project_id": "DEMO",
+  "episode_project_id": "demo_s01e001",
+  "source_plan_id": "demo_s01e001_scene_assets_v001",
+  "generation_requirements": [
+    {
+      "asset_id": "AST-LOC-LIN-HOME-COURTYARD-DAY",
+      "category": "location",
+      "name": "林家庭院·白天",
+      "location_id": "LOC-LIN-HOME",
+      "sub_location_id": "SUBLOC-LIN-HOME-COURTYARD",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "identity_fingerprint": "lin-home-courtyard-earth-yard-main-door-v1",
+      "scene_ids": [
+        "SC02"
+      ],
+      "visual_identity": {},
+      "state_requirements": {
+        "time_of_day": "day",
+        "weather": "clear",
+        "environment_state": "normal",
+        "occupancy_state": "neutral"
+      },
+      "composition_requirements": {},
+      "continuity_constraints": []
+    },
+    {
+      "asset_id": "AST-LOC-VILLAGE-ENTRANCE-DAY",
+      "category": "location",
+      "name": "村口老槐树·白天",
+      "location_id": "LOC-VILLAGE-ENTRANCE",
+      "sub_location_id": "SUBLOC-VILLAGE-ENTRANCE-TREE",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "identity_fingerprint": "village-entrance-old-tree-stone-marker-v1",
+      "scene_ids": [
+        "SC03"
+      ],
+      "visual_identity": {},
+      "state_requirements": {
+        "time_of_day": "day",
+        "weather": "clear",
+        "environment_state": "normal",
+        "occupancy_state": "neutral"
+      },
+      "composition_requirements": {},
+      "continuity_constraints": []
+    },
+    {
+      "asset_id": "AST-LOC-MARKET-ENTRANCE-DAY",
+      "category": "location",
+      "name": "青石集市入口·白天",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-ENTRANCE",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "identity_fingerprint": "market-entrance-stone-road-shops-v1",
+      "scene_ids": [
+        "SC04"
+      ],
+      "visual_identity": {},
+      "state_requirements": {
+        "time_of_day": "day",
+        "weather": "clear",
+        "environment_state": "busy_market",
+        "occupancy_state": "busy"
+      },
+      "composition_requirements": {},
+      "continuity_constraints": []
+    },
+    {
+      "asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "category": "location",
+      "name": "青石集市盐摊·白天",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "identity_fingerprint": "market-salt-stall-awning-sacks-salt-bin-v1",
+      "scene_ids": [
+        "SC05"
+      ],
+      "visual_identity": {},
+      "state_requirements": {
+        "time_of_day": "day",
+        "weather": "clear",
+        "environment_state": "busy_market",
+        "occupancy_state": "busy"
+      },
+      "composition_requirements": {},
+      "continuity_constraints": []
+    }
+  ],
+  "reuse_assets": [
+    {
+      "asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY",
+      "scene_ids": [
+        "SC01"
+      ],
+      "registry_status": "verified"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+interface:
+  display_name: "DeepWhite 00 小说转漫剧总控 v1.2"
+  short_description: "系列级总控：固定场景资产规划、分镜绑定、视频绑定与跨集串行生产 Gate"
+  default_prompt: "Use $deepwhite-00-novel-series-orchestrator to plan and serially produce this novel as an AI manga-drama series with the scene_bound_auto_v1.2 pipeline. Enforce Screenwriting → Continuity → Scene Asset Planner → strict image prompts → asset generation/review → scene-bound shotlist → scene-bound video dispatcher → final composition, and do not complete an episode until pipeline evidence passes."
+policy:
+  allow_implicit_invocation: true

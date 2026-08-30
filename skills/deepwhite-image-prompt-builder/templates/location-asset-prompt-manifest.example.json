@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.0",
+  "mode": "strict_asset_plan",
+  "project_id": "DEMO",
+  "episode_project_id": "demo_s01e001",
+  "source_plan_id": "demo_s01e001_scene_assets_v001",
+  "source_requirement_count": 1,
+  "assets": [
+    {
+      "asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "category": "location",
+      "name": "青石集市·盐摊·白天",
+      "filename": "AST-LOC-MARKET-SALT-STALL-DAY.png",
+      "prompt_zh": "架空东方古代青石集市中的固定盐摊环境参考图。盐摊位于画面右侧，粗布遮棚覆盖旧木摊架，木制盐斗和成排麻袋形成清晰识别点；画面左侧保留青石主街通道，低矮木构铺面延伸至背景，空间结构和通行方向明确。白天晴朗，集市处于正常忙碌状态，可有少量不可辨识身份的背景路人，但不出现明确主角。采用宽幅环境建立构图，重点展示可重复使用的空间布局、建筑关系和主要材质，中央保留人物后续表演空间。土褐、灰青与暖木色为稳定主色，旧木、粗布、麻袋、青石具有统一国风厚涂半写实二维材质。后续同一盐摊必须保持遮棚、摊架、麻袋、盐斗和主街方向一致。",
+      "prompt_en": "Canonical environment reference for a fixed salt stall in an original ancient Eastern stone-paved market. The salt stall occupies the right side of the frame beneath a coarse-cloth awning, with a weathered wooden counter, wooden salt scoops, and rows of burlap sacks as stable visual landmarks. The left side remains an open bluestone market passage, with low timber storefronts extending into the background and a clearly readable spatial layout. Clear daytime conditions, normally busy market state, with only a few non-identifiable background extras and no featured protagonist. Wide establishing environment composition designed for repeated production use, clearly showing architecture, circulation, landmarks, and materials while preserving central performance space. Stable earth-brown, gray-blue, and warm wood palette; painterly semi-realistic 2D Chinese-inspired treatment of bluestone, old timber, coarse fabric, and sacks. Preserve the exact awning, stall, sacks, salt scoops, and main-street direction in all later views of this location.",
+      "reference_images": [],
+      "metadata": {
+        "scene_ids": ["SC03"],
+        "location_id": "LOC-MARKET",
+        "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+        "identity_fingerprint": "market-salt-stall-stone-road-wood-awning-v1",
+        "source_plan_id": "demo_s01e001_scene_assets_v001",
+        "continuity_notes": "后续同一盐摊保持摊位、主街方向、遮棚、木架、盐斗和麻袋关系稳定"
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "project_id": "DEMO",
+  "episode_project_id": "demo_s01e001",
+  "source_plan_id": "demo_s01e001_scene_assets_v001",
+  "generation_requirements": [
+    {
+      "asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "category": "location",
+      "name": "青石集市·盐摊·白天",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+      "asset_role": "base",
+      "base_asset_id": null,
+      "state_version": null,
+      "identity_fingerprint": "market-salt-stall-stone-road-wood-awning-v1",
+      "scene_ids": ["SC03"],
+      "visual_identity": {},
+      "state_requirements": {
+        "time_of_day": "day",
+        "weather": "clear",
+        "environment_state": "busy_market",
+        "occupancy_state": "busy"
+      },
+      "composition_requirements": {},
+      "continuity_constraints": []
+    }
+  ],
+  "reuse_assets": []
+}

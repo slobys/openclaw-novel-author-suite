@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "project_id": "DEMO",
+  "source_scene_asset_plan_id": "demo_s01e001_scene_assets_v001",
+  "scene_asset_gate_passed": true,
+  "shots": [
+    {
+      "shot_id": "SH001",
+      "scene_id": "SC01",
+      "location_id": "LOC-LIN-HOME",
+      "sub_location_id": "SUBLOC-LIN-HOME-LIVINGROOM",
+      "location_asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY",
+      "inherited_from_scene_handoff": true
+    },
+    {
+      "shot_id": "SH002",
+      "scene_id": "SC01",
+      "location_id": "LOC-LIN-HOME",
+      "sub_location_id": "SUBLOC-LIN-HOME-LIVINGROOM",
+      "location_asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY",
+      "inherited_from_scene_handoff": true
+    },
+    {
+      "shot_id": "SH008",
+      "scene_id": "SC03",
+      "location_id": "LOC-MARKET",
+      "sub_location_id": "SUBLOC-MARKET-SALT-STALL",
+      "location_asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "inherited_from_scene_handoff": true
+    }
+  ]
+}

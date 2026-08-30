@@ -1,173 +1,169 @@
-# OpenClaw Novel Author Suite
+# OpenClaw Novel-to-Drama Pipeline
 
-面向 OpenClaw 的长篇小说全流程套件：`Novel Engine 0.4.5` 持久化插件 + `Novel Author V5.3.2 Balanced` Agent Workspace。
+这是 OpenClaw 的“小说转 AI 漫剧/短剧”全自动生产套件。它把两个互相关联的 Agent 和 9 个 DeepWhite Skills 一次安装好：
 
-它提供项目级篇幅契约、17类逻辑审计、两个独立审稿会话、可恢复提交、动态状态、三级记忆、长期故事台账、Closure 与完整性检查。
+- `novel-producer`：把整本小说整理成可靠的系列计划和逐集生产简报；
+- `drama-producer`：接过一集简报，完成剧本、场景资产、图片、分镜、视频和成片闭环。
 
-## 系统逻辑结构
+本仓库有两条独立安装通道：
 
-这套系统分成两层：`Novel Author` 负责创作决策与流程编排，`Novel Engine` 负责持久化、校验、事务提交和状态恢复。Agent 不能绕过 Engine 直接宣称章节已经完成。
+| 分支 | 用途 | 安装内容 |
+| --- | --- | --- |
+| [`novel-author`](../../tree/novel-author) | 从零创作长篇小说 | Novel Author Agent + Novel Engine |
+| `drama-pipeline`（当前分支） | 把已有小说连续制作成 AI 漫剧/短剧 | Novel Producer + Drama Producer + DeepWhite 技能链 |
 
-### 组件关系
+## 一句话看懂工作逻辑
 
-```mermaid
-flowchart LR
-    U[用户] --> O[OpenClaw]
-    O --> A[写作 Agent]
-    A --> C[连续性审稿]
-    A --> R[读者审稿]
-    A <--> E[Novel Engine]
-    E --> D[小说项目数据]
+```text
+用户给小说
+  ↓
+novel-producer：读全书、建故事档案、按事件和时长规划集数、每次只交一集
+  ↓
+drama-producer：把这一集变成剧本、场景图、角色/道具图、分镜、视频片段和最终 MP4
+  ↓
+确定性 Gate：每一步核对场景、资产、Hash、回调证据和完成状态
+  ↓
+本集成片验证通过后，才允许继续下一集
 ```
 
-### 单章生产流程
+章节数不等于最终集数。一章可以拆成多集，多个短章也可以合并；系统按剧情事件、自然对白时长、动作、转场和情绪闭环决定容量。
+
+## 完整生产流程
 
 ```mermaid
 flowchart TB
-    P[1 准备] --> D[2 写作]
-    D --> L{3 篇幅}
-    L -- 修订 --> D
-    L -- 通过 --> A[4 十七类审计]
-    A --> C[5 连续性审稿]
-    A --> R[6 读者审稿]
-    C --> Q[7 质量回执]
-    R --> Q
-    Q --> G[8 提交前门禁]
-    G --> M[9 提交]
-    M --> X[10 闭环]
-    X --> I{11 完整性}
-    I -- 通过 --> N[下一章]
-    I -- 失败 --> B[停止并报告]
+    U[用户提供小说] --> NP[Novel Producer<br/>全书整理与分集]
+    NP --> S[单集简报<br/>只派发一集]
+    S --> DP[Drama Producer<br/>单集总制片]
+    DP --> W[剧本与连续性]
+    W --> P[场景资产规划]
+    P --> I[图片提示词与生图]
+    I --> L[分镜与场景绑定]
+    L --> V[视频任务与生成]
+    V --> F[最终合成与证据]
+    F --> G{全链路通过?}
+    G -- 是 --> N[允许下一集]
+    G -- 否 --> B[停在失败阶段修复]
 ```
 
-| 流程节点 | 完整含义 |
-| --- | --- |
-| 1 准备 | 读取服务端 `nextChapter`、章纲、动态状态、三级记忆和长线故事台账 |
-| 2 写作 | Writer 主会话根据资料包生成正文 |
-| 3 篇幅 | 应用项目级篇幅契约；默认硬下限 2000、理想目标 2600、建议上限 3200 |
-| 4 十七类审计 | 检查事实、时间线、空间、动机、知识边界、世界规则、资源、因果等 17 类问题 |
-| 5–6 独立审稿 | Continuity Auditor 与 Reader Editor 使用两个真实且不同的子会话 |
-| 7 质量回执 | Writer 与两个审稿会话绑定同一份正文 SHA-256，记录服务端 Quality Receipt |
-| 8 提交前门禁 | 核对正文、审计、质量回执、章节号、requestId 与 Hash 是否一致 |
-| 9 提交 | Novel Engine 通过幂等、CAS 和可恢复事务写入章节 |
-| 10 闭环 | 更新因果、伏笔、承诺、关系、对手时钟、章节签名、动态状态和三级记忆 |
-| 11 完整性 | 检查章节及所有派生记录；只有 `clean` 才把 `nextChapter` 交给下一章 |
+流程不会因为某张图或某个片段失败就从头重做整集：场景规划失败回到场景规划，图片失败只重做失败资产，视频失败只处理失败片段，合成失败先修合成。
 
-### 各模块职责
+## 各模块是干什么的
 
-| 模块 | 一句话理解 | 它具体做什么 |
+| 模块 | 通俗角色 | 实际工作 |
 | --- | --- | --- |
-| OpenClaw Gateway | **整套系统的运行平台和总入口** | 把模型、Agent 和插件连接起来，接收用户指令，并负责创建主会话和两个独立审稿子会话。它相当于系统的“操作系统”。 |
-| Novel Author Agent | **小说主笔 + 总编辑 + 流程主管** | 读取大纲和历史资料，撰写正文，把同一章交给不同审稿员检查，根据问题定点修改，并按顺序推进每一道流程。 |
-| Continuity Auditor | **专门找前后矛盾和穿帮的审稿员** | 检查人物、时间、地点、道具、信息来源、世界规则、因果和人物关系能不能与前文对上。例如：上一章陶锅，下一章不能突然出现“铁锈味”。 |
-| Reader Editor | **站在普通读者角度试读的编辑** | 检查这一章是否好读、拖沓、重复、缺少笑点或钩子，以及人物是否主动推动故事。它关注的是“读起来好不好看”。 |
-| Novel Engine 插件 | **小说档案库 + 流程门卫** | 保存项目、大纲、章节、审稿结果、人物状态、记忆和长线台账；同时核对章节号、字数和正文 Hash，防止跳章、重复提交或拿错版本。 |
-| Integrity Check | **每章完成后的总验收** | 提交后再核对正文、审稿、人物状态、伏笔、记忆和其他记录是否齐全且属于同一版本。只有全部通过，系统才允许开始下一章。 |
+| OpenClaw Gateway | 运行平台 | 加载 Agent、Skills 和模型，管理会话；不保存短剧业务事实。 |
+| Novel Producer | 系列主编 | 读整本小说，建立人物、时间线和伏笔账本；按事件价值与屏幕容量规划集数；每次只把当前一集交给下游。 |
+| Drama Producer | 单集总导演兼制片 | 组织当前集从剧本到成片的所有阶段，保存检查点，决定失败后回到哪一步。 |
+| Screenwriting | 编剧 | 把单集简报变成能拍的分场剧本，给每个 Scene 稳定编号。 |
+| Continuity | 场记 | 记录人物位置、服装、伤痕、道具、时间、天气和移动路线，防止下一镜无故重置。 |
+| Scene Asset Planner | 场景美术统筹 | 先决定每个 Scene 具体发生在哪里、复用哪张旧场景、需要新画哪些角度；避免整集只用一个背景。 |
+| Image Prompt Builder | 图片提示词设计师 | 严格按照资产计划写图像提示词；重要角色/资产按独立 9:16 单图输出多个角度，不允许一张拼图塞所有视角。 |
+| Asset Dispatcher | 生图任务派发员 | 校验任务和重试预算后提交 n8n；HTTP 2xx 只记为“入口收到”，不冒充生成完成。 |
+| Shotlist Builder | 分镜师 | 使用实际审核通过的图片做分镜，并把每个镜头绑定到正确 Scene 和场景资产。 |
+| Transition Builder | 剪辑衔接设计师 | 只在需要时设计动作、视线、声音或首尾帧桥接；不能偷偷改掉场景绑定。 |
+| Video Dispatcher | 视频任务派发员 | 再次核对镜头、场景和参考资产后提交 n8n 视频任务。 |
+| Pipeline Evidence | 总验收员 | 验证所有 Gate、最终 MP4、文件大小和 SHA-256；通过后才把本集标记完成。 |
 
-### 一章的完成标准
-
-只有以下链路全部成功，章节才算真正完成，并允许进入下一章：
-
-```text
-Prepare → Draft → Length → 17类审计 → 两个独立审稿
-→ Quality → Precommit → Commit → Closure → Integrity(clean)
-```
-
-正文每次修订都会产生新的 canonical SHA-256；17类审计、两个独立审稿、Quality、Commit 与 Closure 必须绑定同一个完整 Hash。Payload 格式错误只修 Payload，不重复进行已经通过的语义审稿。
-
-### 仓库目录
-
-```text
-openclaw-novel-author-suite/
-├─ src/、dist/                 # Novel Engine 插件源码与运行文件
-├─ workspace-novel-author/    # Novel Author Agent、Workflow、Skill 与协议
-├─ skills/novel-author/       # 插件随包提供的 Skill
-├─ install.sh                 # 一键安装/更新，覆盖前自动备份
-├─ uninstall.sh               # 只卸载插件，保留用户数据
-├─ test/、tests/              # Engine 与安装器测试
-└─ docs/                      # 插件和 Agent 详细说明
-```
-
-运行后，小说项目默认保存在 `~/.openclaw/data/novels/<projectId>/`；Agent Workspace、会话和插件目录彼此分离，因此更新 Agent/插件不会删除小说数据。
+举例：角色从“家中堂屋”走到“村口”。Scene Planner 会为堂屋、院落/路径锚点和村口建立明确绑定；Continuity 记录移动方向和地标；Shotlist 只能使用这些真实资产；Video Dispatcher 再核对一次。因此不会直接跳成一张毫无关系的新背景，也不会一直困在同一个房间。
 
 ## 一键安装
 
-适用于 Linux、群晖/QNAP 等 NAS SSH 环境。安装前请先确认你信任本仓库，因为 OpenClaw 插件会在 Gateway 进程中运行代码。
+适用于 Linux、群晖/QNAP 等 NAS SSH 环境。需要 OpenClaw、Node.js、Python 3、`bash`、`curl` 和 `tar`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.5/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.0.0/install.sh | bash
 ```
 
 安装器会：
 
-1. 从固定标签 `v0.4.5` 安装并启用 `novel-engine`；
-2. 把公共 Agent 模板部署到 `~/.openclaw/workspace-novel-author`；
-3. 已存在的同名 Workspace 文件先备份，不覆盖 `memory/`、`exports/`、`.novel-runtime/` 或小说数据；
-4. 创建或更新 `novel-author` Agent；
-5. 配置新项目默认篇幅：硬下限2000、理想目标2600、建议上限3200；
-6. 校验配置并重启 Gateway；
-7. 检查插件运行时注册。
+1. 安装或更新两个 Agent Workspace；
+2. 安装 9 个 DeepWhite Skills；
+3. 已存在同名 Agent 时读取真实 roster 并沿用其 Workspace；
+4. 覆盖公共模板前备份旧文件；
+5. 永不覆盖或删除 `projects/`、`memory/`、`output/`、`.learnings/`、会话或 n8n 数据；
+6. 校验 OpenClaw 配置并安全重启 Gateway。
 
-要求：OpenClaw `>=2026.5.17`、Node.js `>=22.22.3`，以及 `bash`、`curl`、`tar`、`git`。
+重复执行同一条命令就是更新，不会重复创建同名 Agent。
 
-## 安装后
+## 安装后必须配置
 
-在 OpenClaw 中打开 `novel-author` Agent，然后可以输入：
-
-```text
-我要创建一部长篇原创小说。先完成创意设计，不要立即写正文。
-```
-
-或者续写已有项目：
+本套件不会把作者自己的 NAS 路径、Webhook 或密钥公开。请给 OpenClaw Gateway 配置以下环境变量：
 
 ```text
-继续创作项目 <projectId> 的下一章。以服务端 nextChapter 为准，确认上一章 Closure 和 Integrity 后按 Balanced 流程执行。
+OPENCLAW_ASSET_ROOT=/你的/n8n/固定结果根目录
+N8N_ASSET_WEBHOOK_URL=https://你的n8n/webhook/...
+N8N_ASSET_WEBHOOK_SECRET=你的密钥
+N8N_VIDEO_WEBHOOK_URL=https://你的n8n/webhook/...
+N8N_VIDEO_WEBHOOK_SECRET=你的密钥
 ```
 
-## 更新
+systemd 用户服务可通过 `systemctl --user edit openclaw-gateway` 添加：
 
-再次执行同一条安装命令即可。安装器会备份即将覆盖的 Workspace 文件，插件通过固定 Git 标签更新。
-
-## 卸载
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.5/uninstall.sh | bash
+```ini
+[Service]
+Environment=OPENCLAW_ASSET_ROOT=/path/to/openclaw-assets
+Environment=N8N_ASSET_WEBHOOK_URL=https://n8n.example.com/webhook/assets
+Environment=N8N_ASSET_WEBHOOK_SECRET=replace-me
+Environment=N8N_VIDEO_WEBHOOK_URL=https://n8n.example.com/webhook/video
+Environment=N8N_VIDEO_WEBHOOK_SECRET=replace-me
 ```
 
-卸载只移除插件，不删除 Agent Workspace、会话或 `~/.openclaw/data/novels` 小说数据。
-
-## 手动安装
+然后运行：
 
 ```bash
-openclaw plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.5 --force
-openclaw plugins enable novel-engine
+systemctl --user daemon-reload
 openclaw config validate
-openclaw gateway restart
-openclaw plugins inspect novel-engine --runtime --json
+openclaw gateway restart --safe
 ```
 
-手动安装插件不会复制 Agent Workspace；完整部署请使用 `install.sh`。
+更完整说明见 [配置文档](docs/CONFIGURATION.md)。
 
-## 数据与隐私边界
+## 怎么开始
 
-公开仓库不包含作者的小说正文、项目数据、memory、exports、会话、OpenClaw 配置、模型凭证或 API Key。运行时小说默认保存在 `~/.openclaw/data/novels`，更新和卸载均不删除该目录。
+先打开 `novel-producer` Agent：
 
-## 文档
+```text
+我要把一部长篇小说制作成连续 AI 漫剧。请先读取完整小说，建立可追溯摘要、人物/时间线/伏笔账本，再根据剧情事件、自然对白时长、动作和情绪闭环规划集数。不要按原文章节数机械决定集数。先完成系列规划并展示结果，不要立即派发生产。
+```
 
-- [Novel Engine 技术说明](docs/PLUGIN.md)
-- [Novel Author Workspace 说明](docs/WORKSPACE.md)
-- [0.4.5 升级说明](UPGRADE-0.4.5.md)
-- [安全策略](SECURITY.md)
+确认规划后：
+
+```text
+按当前系列计划开始制作第一集。每次只允许一集处于 running；严格执行 scene_bound_auto_v1.2，上一集最终 MP4 与 Pipeline Evidence 未通过前不得派发下一集。
+```
+
+## 目录结构
+
+```text
+workspaces/
+├─ novel-producer/       # 系列改编、分集规划和顺序派发
+└─ drama-producer/       # 单集从剧本到最终视频的状态机
+skills/
+├─ deepwhite-00-novel-series-orchestrator
+├─ deepwhite-screenwriting-v1
+├─ deepwhite-continuity-worldstate-zh
+├─ deepwhite-scene-asset-planner
+├─ deepwhite-image-prompt-builder
+├─ deepwhite-n8n-asset-dispatcher
+├─ deepwhite-shotlist-builder-zh-user
+├─ deepwhite-shot-transition-builder-zh
+└─ deepwhite-n8n-video-dispatcher
+```
+
+## 数据和隐私
+
+公开分支不含小说正文、真实项目、memory、会话、生成结果、API Key、Webhook 密钥或作者 NAS 路径。用户运行后产生的数据留在自己的 OpenClaw/NAS 中。详见 [隐私边界](docs/PRIVACY.md)。
 
 ## 开发验证
 
 ```bash
-npm ci --omit=peer --legacy-peer-deps
-npm run verify
-python3 -m unittest discover -s workspace-novel-author/skills/novel-author/tests -p 'test_*.py'
+bash tests/run-tests.sh
 bash tests/test-install.sh
+python3 scripts/check-public-release.py
 ```
 
 ## License
 
 MIT
+

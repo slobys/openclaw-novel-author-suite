@@ -1,0 +1,8 @@
+interface:
+  display_name: "DeepWhite Continuity World-State ZH"
+  short_description: "中文影视连续性分析与世界状态账本"
+  brand_color: "#7c3aed"
+  default_prompt: "Use $deepwhite-continuity-worldstate-zh to build a confirmed Chinese continuity world-state ledger from this script or shotlist."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeepWhite Scene Asset Planner"
+  short_description: "Plan and bind scene/location assets for AI drama production."
+  default_prompt: "Use $deepwhite-scene-asset-planner after screenplay and continuity analysis to enumerate every scene, normalize locations and sub-locations, reuse existing environment assets when valid, plan missing location assets, bind each scene to exactly one primary location asset, and pass the scene-asset coverage gate before image prompting or n8n generation."

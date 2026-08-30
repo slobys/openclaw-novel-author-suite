@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "passed": true,
+  "project_id": "DEMO",
+  "video_job_id": "demo_video_20260827_001",
+  "clip_count": 2,
+  "valid_clip_count": 2,
+  "binding_coverage_ratio": 1.0,
+  "checks": {
+    "unknown_scene_count": 0,
+    "location_id_mismatch_count": 0,
+    "sub_location_id_mismatch_count": 0,
+    "location_asset_mismatch_count": 0,
+    "missing_location_asset_count": 0,
+    "missing_reference_asset_count": 0,
+    "background_reference_error_count": 0,
+    "scene_keyframe_lineage_error_count": 0,
+    "basic_schema_error_count": 0
+  },
+  "clip_results": [],
+  "errors": [],
+  "warnings": []
+}

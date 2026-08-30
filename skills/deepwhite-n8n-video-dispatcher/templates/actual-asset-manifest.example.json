@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "project_id": "DEMO",
+  "source_asset_job_id": "demo_assets_20260827_001",
+  "assets": [
+    {
+      "asset_id": "AST-CH-LIN-MANCHANG",
+      "category": "character",
+      "status": "approved"
+    },
+    {
+      "asset_id": "AST-LOC-LIN-HOME-LIVINGROOM-DAY",
+      "category": "location",
+      "status": "approved"
+    },
+    {
+      "asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+      "category": "location",
+      "status": "approved"
+    },
+    {
+      "asset_id": "AST-KF-SC03-001",
+      "category": "storyboard",
+      "status": "approved",
+      "metadata": {
+        "scene_id": "SC03",
+        "source_location_asset_id": "AST-LOC-MARKET-SALT-STALL-DAY",
+        "review_status": "approved"
+      }
+    }
+  ]
+}

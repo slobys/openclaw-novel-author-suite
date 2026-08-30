@@ -1,0 +1,211 @@
+schema_version: '1.4'
+agent_id: novel-producer
+downstream_agent_id: drama-producer
+
+defaults:
+  season_number: 1
+  format_profile: auto
+  genre_profile: hybrid
+  episode_duration_seconds: 90
+  aspect_ratio: auto
+  domestic_vertical_default_aspect_ratio: '9:16'
+  cinematic_horizontal_default_aspect_ratio: '16:9'
+  professional_gate_min_score: 82
+  protected_dimension_min_score: 80
+  max_seconds_without_effective_change: 20
+  source_char_soft_limit_per_90s: 1200
+  source_char_hard_limit_per_90s: 1800
+  min_seconds_per_effective_beat: 10
+  require_episode_capacity_budget: true
+  require_event_to_scene_mapping: true
+  require_zero_unmapped_events: true
+  source_preservation_default: source_preserving_segmentation
+  source_preservation_user_lock: exact_passthrough
+  allow_lossy_adaptation_only_with_explicit_user_permission: true
+  lossy_adaptation_requires_user_request_quote: true
+  source_preserving_segment_target_chars: 350
+  source_preserving_segment_min_chars: 200
+  source_preserving_segment_max_chars: 500
+  source_preserving_soft_limit_per_90s: 350
+  source_preserving_hard_limit_per_90s: 550
+  natural_chinese_voice_chars_per_second: 3.5
+  opening_hook_target_seconds: 3
+  conflict_established_target_seconds: 15
+  ending_hook_window_seconds: 8
+  max_active_episodes: 1
+  chapter_summary_max_attempts: 2
+  structured_gate_max_attempts: 2
+  internal_hook_max_attempts: 3
+  auto_dispatch: true
+  auto_retry_whole_episode: false
+  visual_authority: drama-producer
+  explicit_user_style_policy: exact_passthrough
+  unspecified_style_policy: downstream_auto
+  forbid_ai_gate_as_user_confirmation: true
+
+paths:
+  projects_root: ${OPENCLAW_STATE_DIR}/workspace-novel-producer/projects
+  source: input/source
+  source_segments: segments/source_segments.json
+  raw_segments: segments/raw
+  raw_chapters: chapters/raw
+  chapter_index: chapters/chapter_index.json
+  summaries: summaries
+  bible: bible
+  plan: plan
+  format_strategy: plan/format_strategy.json
+  episodes: episodes
+  review: review
+  queue_ready: queue/ready
+  queue_running: queue/running
+  queue_done: queue/done
+  queue_failed: queue/failed
+  world_state: world_state
+  series_assets: series_assets
+  asset_registry: asset_registry.json
+  drama_projects_root: ${OPENCLAW_STATE_DIR}/workspace-drama-producer/projects
+
+pipeline:
+  phase_n0:
+    name: novel_ingest_and_chapter_split
+    outputs:
+      - chapters/chapter_index.json
+      - chapters/raw/
+  phase_n0_5:
+    name: default_lossless_source_segmentation
+    outputs:
+      - plan/source_preservation_contract.json
+      - segments/source_segments.json
+      - segments/raw/
+    constraints:
+      - zero_source_character_gaps
+      - zero_source_character_overlap
+      - exact_segment_sha256
+      - original_order_preserved
+      - lossy_mode_requires_explicit_user_permission
+  phase_n1:
+    name: chapter_structured_summaries
+    outputs:
+      - summaries/chapter_*.summary.json
+  phase_n2:
+    name: global_book_bible
+    outputs:
+      - bible/book_bible.json
+      - bible/characters.json
+      - bible/timeline.json
+      - bible/clue_ledger.json
+  phase_n2_5:
+    name: series_format_story_visual_context_and_style_handoff
+    outputs:
+      - plan/format_strategy.json
+    required_decisions:
+      - audience_and_distribution
+      - format_and_aspect_ratio
+      - genre_story_engine
+      - story_visual_context
+      - style_handoff_authority_and_mode
+      - exact_user_style_passthrough_when_specified
+      - asset_reuse_and_cost_strategy
+  phase_n3:
+    name: value_driven_season_and_episode_plan
+    outputs:
+      - plan/series_plan.json
+      - plan/adaptation_ledger.json
+    capacity_gate:
+      source_char_soft_limit_per_90s: 1200
+      source_char_hard_limit_per_90s: 1800
+      min_seconds_per_effective_beat: 10
+      require_estimated_screen_seconds: true
+      require_zero_unmapped_events: true
+      require_zero_unmapped_source_segments_when_locked: true
+      source_preserving_soft_limit_per_90s: 350
+      source_preserving_hard_limit_per_90s: 550
+  phase_n4:
+    name: professional_manga_episode_briefs
+    outputs:
+      - episodes/episode_*.json
+    required_contracts:
+      - hook_contract
+      - rhythm_map
+      - emotion_curve
+      - payoff_map
+      - visual_strategy
+      - style_handoff
+      - style_handoff_sha256
+      - professional_gate
+      - episode_capacity
+      - source_event_to_scene_beat_mapping
+      - source_segment_to_representation_mapping_when_locked
+  phase_n5:
+    name: automated_professional_gates
+    pass_thresholds:
+      overall_score: 82
+      source_fidelity: 80
+      character_integrity: 80
+      continuity_safety: 80
+      hard_failures: 0
+      capacity_overloads: 0
+    style_handoff_gate:
+      authority: drama-producer
+      require_exact_user_request_when_locked: true
+      require_series_episode_sha256_match: true
+      forbid_ai_gate_as_user_confirmation: true
+      forbid_medium_or_style_transformation: true
+    pause_only_on:
+      - source_coverage_failure
+      - unresolved_canon_conflict
+      - missing_source_evidence
+      - repeated_structured_gate_failure
+      - material_adaptation_choice
+  phase_n6:
+    name: sequential_episode_dispatch
+    constraints:
+      - max_one_running_episode
+      - previous_final_video_required
+      - completed_episode_never_requeued
+      - whole_episode_failure_stops_series
+  phase_n6_5:
+    name: strict_series_asset_reuse_gate
+    constraints:
+      - every_reuse_id_resolves_to_registered_asset
+      - canonical_file_must_be_readable
+      - file_size_and_sha256_must_match
+      - reused_asset_ids_are_excluded_from_generation
+      - new_assets_are_canonicalized_under_series_assets
+
+downstream_contract:
+  event: deepwhite_series_episode_ready
+  hook_path: deepwhite-series-episode
+  context_filename: input/series_episode_context.json
+  style_handoff:
+    required: true
+    authority: drama-producer
+    context_sources:
+      - series_format_strategy.style_handoff
+      - episode.style_handoff_sha256
+      - style_handoff_sha256
+    user_locked_policy: exact_passthrough
+    downstream_auto_policy: drama_producer_decides_visual_implementation
+  downstream_pipeline:
+    - deepwhite-screenwriting-v1
+    - deepwhite-continuity-worldstate-zh
+    - deepwhite-scene-asset-planner
+    - deepwhite-image-prompt-builder
+    - location_prompt_manifest_gate
+    - n8n_asset_generation
+    - deepwhite-shotlist-builder-zh-user
+    - shot_scene_binding_gate
+    - deepwhite-shot-transition-builder-zh_optional
+    - deepwhite-n8n-video-dispatcher
+    - n8n_video_generation
+    - ffmpeg_final_composition
+    - episode_pipeline_evidence
+  downstream_pipeline_profile: scene_bound_auto_v1.2
+  success_status: final_video_ready
+  completion_requires:
+    - final_video_manifest_valid
+    - composed_marker_exists
+    - final_mp4_readable
+    - final_mp4_sha256_matches
+    - series_asset_delta_valid
+    - reused_asset_integrity_valid

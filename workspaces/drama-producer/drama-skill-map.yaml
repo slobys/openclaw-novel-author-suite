@@ -1,0 +1,92 @@
+schema_version: '2.0'
+project:
+  name: AI Short Drama Production Pipeline
+  agent: drama-producer
+
+# 这是给 Agent 快速读取的索引，不是第二套流程定义。
+# 阶段、状态、停止条件与 Gate 的唯一权威来源是 drama-workflow.yaml。
+source_of_truth: drama-workflow.yaml
+pipeline_profile: scene_bound_auto_v1.2
+
+route:
+  - order: 10
+    stage: screenplay
+    skill: deepwhite-screenwriting-v1
+  - order: 20
+    stage: continuity
+    skill: deepwhite-continuity-worldstate-zh
+  - order: 25
+    stage: scene_asset_plan
+    skill: deepwhite-scene-asset-planner
+  - order: 30
+    stage: image_prompt
+    skill: deepwhite-image-prompt-builder
+    mode: STRICT_ASSET_PLAN_MODE
+  - order: 35
+    stage: location_prompt_gate
+    action: deterministic_validator
+  - order: 40
+    stage: asset_dispatch
+    skill: deepwhite-n8n-asset-dispatcher
+  - order: 45
+    stage: asset_ingest_and_review
+    action: callback_and_actual_image_review
+  - order: 50
+    stage: final_shotlist
+    skill: deepwhite-shotlist-builder-zh-user
+    mode: AUTO_GATE_MODE
+  - order: 55
+    stage: shot_binding_gate
+    action: deterministic_validator
+  - order: 60
+    stage: transition
+    skill: deepwhite-shot-transition-builder-zh
+    optional: true
+  - order: 65
+    stage: video_prompt_readiness
+    action: deterministic_and_semantic_gate
+  - order: 70
+    stage: video_dispatch
+    skill: deepwhite-n8n-video-dispatcher
+  - order: 80
+    stage: video_result
+    action: callback_ingest
+  - order: 90
+    stage: final_composition
+    action: callback_and_file_verification
+  - order: 95
+    stage: pipeline_evidence
+    action: deterministic_validator
+    series_only: true
+  - order: 100
+    stage: series_commit
+    action: series_orchestrator_complete
+    series_only: true
+
+global_invariants:
+  - 每个 Scene 必须有稳定 scene_id
+  - Scene Asset Handoff 是地点与背景资产绑定的唯一权威来源
+  - generation requirements 必须与图片提示词一一对应
+  - 复用资产不得再次提交 n8n
+  - 最终分镜必须基于实际生成或验证复用的图片
+  - 每个视频 clip 只能属于一个 scene_id 和一个 location_asset_id
+  - Transition 不得改变机器场景绑定
+  - HTTP 2xx 只表示 webhook_accepted_unverified
+  - 同一 payload 重试必须复用原 job_id
+  - 最终 MP4 通过可读性、大小与 SHA256 验证后才是 final_video_ready
+
+human_pause_only_when:
+  - 用户明确要求逐阶段审核
+  - 用户锁定要求存在无法自动消解的冲突
+  - 关键来源或权威资产证据缺失
+  - 自动修订达到上限后仍有 Critical 问题
+  - 跨图材质或风格存在会改变用户选择的实质差异
+  - 对外发布或其他未授权外部动作
+
+resume_rule:
+  read_first:
+    - drama-workflow.yaml
+    - project.json
+    - state/pipeline_state.json
+    - input/production_pipeline_contract.json（系列项目）
+  behavior: 从最后一个已验证检查点继续，禁止根据聊天记录猜测完成状态
