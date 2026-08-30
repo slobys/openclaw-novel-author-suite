@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="1.0.0"
+SUITE_VERSION="1.0.1"
 REPOSITORY="slobys/openclaw-novel-author-suite"
 REF="${DRAMA_SUITE_REF:-drama-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
@@ -114,6 +114,9 @@ install_tree() {
       *.pyc|*.pyo|*.bak*) continue ;;
     esac
     local target_file="${target_root}/${relative}"
+    if [[ -f "${target_file}" && ( "${relative}" == "USER.md" || "${relative}" == "HEARTBEAT.md" ) ]]; then
+      continue
+    fi
     if [[ -f "${target_file}" ]]; then
       mkdir -p "${backup_dir}/${backup_group}/$(dirname "${relative}")"
       cp -p -- "${target_file}" "${backup_dir}/${backup_group}/${relative}"
@@ -161,4 +164,3 @@ log "Installed Drama Pipeline Suite ${SUITE_VERSION}"
 log "Workspace backup: ${backup_dir}"
 log "Projects, memory, output and sessions were not modified."
 log "Next: configure OPENCLAW_ASSET_ROOT and your n8n webhook URLs, then open novel-producer."
-

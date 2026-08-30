@@ -12,6 +12,8 @@ mkdir -p \
 printf 'private memory\n' > "${TEST_ROOT}/state/workspace-novel-producer/memory/private.md"
 printf 'private project\n' > "${TEST_ROOT}/state/workspace-drama-producer/projects/demo/private.txt"
 printf 'old agent contract\n' > "${TEST_ROOT}/state/workspace-novel-producer/AGENTS.md"
+printf 'my user profile\n' > "${TEST_ROOT}/state/workspace-novel-producer/USER.md"
+printf 'my heartbeat task\n' > "${TEST_ROOT}/state/workspace-drama-producer/HEARTBEAT.md"
 
 cat > "${TEST_ROOT}/bin/openclaw" <<'FAKE'
 #!/usr/bin/env bash
@@ -40,10 +42,14 @@ bash "${REPO_ROOT}/install.sh"
 
 test -f "${OPENCLAW_STATE_DIR}/workspace-novel-producer/AGENTS.md"
 test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/AGENTS.md"
+test -f "${OPENCLAW_STATE_DIR}/workspace-novel-producer/IDENTITY.md"
+test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/SOUL.md"
 test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-00-novel-series-orchestrator/SKILL.md"
 test "$(find "${OPENCLAW_STATE_DIR}/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 9
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-producer/memory/private.md")" = 'private memory'
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-drama-producer/projects/demo/private.txt")" = 'private project'
+test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-producer/USER.md")" = 'my user profile'
+test "$(cat "${OPENCLAW_STATE_DIR}/workspace-drama-producer/HEARTBEAT.md")" = 'my heartbeat task'
 find "${OPENCLAW_STATE_DIR}/backups/drama-pipeline-suite" -path '*/workspace-novel-producer/AGENTS.md' -type f | grep -q .
 grep -q 'agents add novel-producer' "${FAKE_OPENCLAW_LOG}"
 grep -q 'agents add drama-producer' "${FAKE_OPENCLAW_LOG}"
@@ -62,4 +68,3 @@ if grep -q 'agents.entries' "${FAKE_OPENCLAW_LOG}"; then
 fi
 
 printf 'installer test passed\n'
-

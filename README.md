@@ -72,7 +72,7 @@ flowchart TB
 适用于 Linux、群晖/QNAP 等 NAS SSH 环境。需要 OpenClaw、Node.js、Python 3、`bash`、`curl` 和 `tar`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.0.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.0.1/install.sh | bash
 ```
 
 安装器会：
@@ -166,4 +166,3 @@ python3 scripts/check-public-release.py
 ## License
 
 MIT
-
