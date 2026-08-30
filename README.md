@@ -20,31 +20,43 @@
 只需执行一条总入口命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.0.0/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | bash
 ```
 
 终端会显示：
 
 ```text
-请选择要安装的版本：
-  1) 小说创作版（Novel Author + Novel Engine）
-  2) 小说转 AI 漫剧版（Novel Producer + Drama Producer + 9 Skills）
+请选择操作：
+  1) 安装/更新 小说创作版
+  2) 安装/更新 小说转 AI 漫剧版
+  3) 安全卸载 小说创作版
+  4) 安全卸载 小说转 AI 漫剧版
 
-请输入 1 或 2：
+请输入 1、2、3 或 4：
 ```
 
 - 输入 `1`：只安装小说创作版；
 - 输入 `2`：只安装小说转 AI 漫剧版；
+- 输入 `3`：安全卸载小说创作版；
+- 输入 `4`：安全卸载小说转 AI 漫剧版；
 - 不会默认把两套一起安装。
+
+安全卸载会再次要求确认，并保留小说项目、正文、`memory/`、会话、生成结果和 Workspace 备份，避免误删创作数据。
 
 如果执行环境无法显示交互菜单，也可以直接指定：
 
 ```bash
 # 只安装小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.0.0/setup.sh | bash -s -- 1
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | bash -s -- 1
 
 # 只安装小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.0.0/setup.sh | bash -s -- 2
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | bash -s -- 2
+
+# 无交互确认：安全卸载小说创作版
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
+
+# 无交互确认：安全卸载小说转 AI 漫剧版
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
 ```
 
 ## 系统逻辑结构
