@@ -92,6 +92,62 @@ async function expectCode(promise, code) {
   });
 }
 
+test("project locks wait for short contention instead of failing immediately", async (t) => {
+  const { engine, projectDir } = await fixture(t, { lockAcquireTimeoutMs: 1000 });
+  let releaseOwner;
+  let ownerEntered;
+  const entered = new Promise((resolve) => { ownerEntered = resolve; });
+  const release = new Promise((resolve) => { releaseOwner = resolve; });
+  const owner = engine.withProjectLock(projectDir, async () => {
+    ownerEntered();
+    await release;
+  });
+  await entered;
+  const contender = engine.withProjectLock(projectDir, async () => "acquired-after-wait");
+  setTimeout(releaseOwner, 120);
+  assert.equal(await contender, "acquired-after-wait");
+  await owner;
+});
+
+test("project locks still fail after the bounded wait expires", async (t) => {
+  const { engine, projectDir } = await fixture(t, { lockAcquireTimeoutMs: 100 });
+  let releaseOwner;
+  let ownerEntered;
+  const entered = new Promise((resolve) => { ownerEntered = resolve; });
+  const release = new Promise((resolve) => { releaseOwner = resolve; });
+  const owner = engine.withProjectLock(projectDir, async () => {
+    ownerEntered();
+    await release;
+  });
+  await entered;
+  await assert.rejects(engine.withProjectLock(projectDir, async () => "unexpected"), (error) => {
+    assert.equal(error.code, "PROJECT_WRITE_LOCKED");
+    assert.ok(error.details.waitedMs >= 100);
+    assert.equal(error.details.lockAcquireTimeoutMs, 100);
+    return true;
+  });
+  releaseOwner();
+  await owner;
+});
+
+test("stale same-process lock leases are safely recovered", async (t) => {
+  const { engine, projectDir } = await fixture(t, { lockStaleMs: 1000, lockAcquireTimeoutMs: 500 });
+  const lockPath = path.join(projectDir, ".write.lock");
+  await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, hostname: os.hostname(), token: "orphaned", createdAt: new Date(Date.now() - 5000).toISOString() }), "utf8");
+  const staleTime = new Date(Date.now() - 5000);
+  await fs.utimes(lockPath, staleTime, staleTime);
+  assert.equal(await engine.withProjectLock(projectDir, async () => "recovered"), "recovered");
+  await assert.rejects(fs.access(lockPath), (error) => error.code === "ENOENT");
+});
+
+test("fresh lock files owned by a dead same-host process are recovered immediately", async (t) => {
+  const { engine, projectDir } = await fixture(t, { lockStaleMs: 600000, lockAcquireTimeoutMs: 500 });
+  const lockPath = path.join(projectDir, ".write.lock");
+  await fs.writeFile(lockPath, JSON.stringify({ pid: 2147483647, hostname: os.hostname(), token: "dead-owner", createdAt: new Date().toISOString() }), "utf8");
+  assert.equal(await engine.withProjectLock(projectDir, async () => "recovered-dead-owner"), "recovered-dead-owner");
+  await assert.rejects(fs.access(lockPath), (error) => error.code === "ENOENT");
+});
+
 test("project configuration supports CAS and project-level writing contracts", async (t) => {
   const { engine } = await fixture(t);
   const before = await engine.projectConfigStatus("book01");

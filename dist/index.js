@@ -1,6 +1,9 @@
 import { Type } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { LOGIC_AUDIT_CATEGORIES, NovelEngine } from "./engine.js";
+import { ChapterSignatureInput, ClosureOperationInput, GenreGateInput } from "./tool-schemas.js";
+
+export { ChapterSignatureInput, ClosureOperationInput, GenreGateInput } from "./tool-schemas.js";
 
 const configSchema = Type.Object({
   projectsRoot: Type.Optional(Type.String({ minLength: 1, description: "Absolute persistent directory for novel projects; defaults to ~/.openclaw/data/novels." })),
@@ -8,9 +11,9 @@ const configSchema = Type.Object({
   maxReferenceBytes: Type.Optional(Type.Integer({ minimum: 1024, maximum: 104857600, default: 20971520 })),
   referenceChunkChars: Type.Optional(Type.Integer({ minimum: 2000, maximum: 40000, default: 12000 })),
   minChapterChars: Type.Optional(Type.Integer({ minimum: 100, maximum: 10000, default: 800, description: "Legacy raw string-length safety check." })),
-  minChapterHanChars: Type.Optional(Type.Integer({ minimum: 0, maximum: 20000, default: 2600, description: "Default project hard minimum Han-character count; each project may override it." })),
-  targetChapterHanChars: Type.Optional(Type.Integer({ minimum: 0, maximum: 30000, default: 3000 })),
-  targetChapterHanCharsMax: Type.Optional(Type.Integer({ minimum: 0, maximum: 50000, default: 3400 })),
+  minChapterHanChars: Type.Optional(Type.Integer({ minimum: 0, maximum: 20000, default: 2000, description: "Default project hard minimum Han-character count; each project may override it." })),
+  targetChapterHanChars: Type.Optional(Type.Integer({ minimum: 0, maximum: 30000, default: 2600, description: "Preferred target, not a mandatory minimum." })),
+  targetChapterHanCharsMax: Type.Optional(Type.Integer({ minimum: 0, maximum: 50000, default: 3200, description: "Preferred upper bound, not a hard failure." })),
   requireChapterAudit: Type.Optional(Type.Boolean({ default: true })),
   requireCompleteAuditChecks: Type.Optional(Type.Boolean({ default: true })),
   requireQualityGate: Type.Optional(Type.Boolean({ default: true })),
@@ -19,6 +22,7 @@ const configSchema = Type.Object({
   requireClosureReceipt: Type.Optional(Type.Boolean({ default: true })),
   rejectEmbeddedChapterHeading: Type.Optional(Type.Boolean({ default: true })),
   lockStaleMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 86400000, default: 600000 })),
+  lockAcquireTimeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 120000, default: 15000, description: "Bounded wait for transient project-lock contention before returning PROJECT_WRITE_LOCKED." })),
   maxArtifactChars: Type.Optional(Type.Integer({ minimum: 1000, maximum: 5000000, default: 500000 })),
   maxContinuityDeltaChars: Type.Optional(Type.Integer({ minimum: 1000, maximum: 2000000, default: 200000 })),
   maxMemoryRecords: Type.Optional(Type.Integer({ minimum: 100, maximum: 100000, default: 10000 })),
@@ -33,16 +37,6 @@ const Revision = Type.Integer({ minimum: 0, maximum: 2147483647 });
 const AuditCategory = Type.Union(LOGIC_AUDIT_CATEGORIES.map((item) => Type.Literal(item)));
 const LedgerType = Type.Union(["promise", "relationship", "oppositionClock", "chapterSignature", "arcAudit", "outlineDrift"].map((item) => Type.Literal(item)));
 const MemoryTier = Type.Union([Type.Literal("short"), Type.Literal("mid"), Type.Literal("long")]);
-const ClosureOperationStatus = Type.Union([Type.Literal("pending"), Type.Literal("completed"), Type.Literal("skipped"), Type.Literal("failed")]);
-const ClosureOperation = Type.Union([
-  ClosureOperationStatus,
-  Type.Object({
-    status: ClosureOperationStatus,
-    evidence: Type.Optional(Type.String({ maxLength: 1000 })),
-    reason: Type.Optional(Type.String({ maxLength: 5000 })),
-    note: Type.Optional(Type.String({ maxLength: 5000 }))
-  }, { additionalProperties: false })
-]);
 
 const ArtifactType = Type.Union([
   "structure-fingerprint", "reference-synthesis", "creative-brief", "story-engine", "novelty-report",
@@ -212,7 +206,7 @@ export default definePluginEntry({
 
     add({ name: "novel_logic_audit_prepare", label: "Prepare Chapter Logic Audit", description: "Build a 17-category logic audit packet with state, memory and story-ledger context.", parameters: Type.Object({ projectId: ProjectId, chapter: Type.Optional(Chapter) }), run: (params) => engine.prepareLogicAudit(params) });
     add({ name: "novel_chapter_audit_record", label: "Record Chapter Audit", description: "Server-recount, hash-bind and persist a complete 17-category chapter audit.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, stage: Type.Optional(Type.Union([Type.Literal("precommit"), Type.Literal("postcommit")])), decision: Type.Union([Type.Literal("pass"), Type.Literal("revise"), Type.Literal("block")]), content: Type.Optional(Type.String({ minLength: 1 })), checks: Type.Optional(Type.Unknown()), issues: Type.Optional(Type.Array(AuditIssue, { maxItems: 100 })), summary: Type.Optional(Type.String({ maxLength: 5000 })) }), run: (params) => engine.recordChapterAudit(params) });
-    add({ name: "novel_chapter_quality_record", label: "Record Independent Chapter Quality", description: "Hash-bind independent Continuity Auditor and Reader Editor receipts plus genre/signature gates.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, content: Type.String({ minLength: 1 }), writerSessionId: Type.String({ minLength: 1, maxLength: 500 }), continuityReview: IndependentReview, readerReview: IndependentReview, genreGate: Type.Unknown(), signature: Type.Unknown(), summary: Type.Optional(Type.String({ maxLength: 10000 })) }), run: (params) => engine.recordChapterQuality(params) });
+    add({ name: "novel_chapter_quality_record", label: "Record Independent Chapter Quality", description: "Hash-bind independent Continuity Auditor and Reader Editor receipts plus genre/signature gates.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, content: Type.String({ minLength: 1 }), writerSessionId: Type.String({ minLength: 1, maxLength: 500 }), continuityReview: IndependentReview, readerReview: IndependentReview, genreGate: GenreGateInput, signature: ChapterSignatureInput, summary: Type.Optional(Type.String({ maxLength: 10000 })) }), run: (params) => engine.recordChapterQuality(params) });
 
     add({ name: "novel_prepare_chapter", label: "Prepare Next Chapter", description: "Build the next writing packet from plans, state, recent chapters, tiered memory and due ledgers; raw reference prose is excluded.", parameters: Type.Object({ projectId: ProjectId }), run: ({ projectId }) => engine.prepareChapter(projectId) });
     add({ name: "novel_commit_chapter", label: "Commit Novel Chapter", description: "Crash-recoverably commit exactly the expected next chapter after project length, full audit, body-hash and independent quality gates pass.", parameters: Type.Object({ projectId: ProjectId, expectedChapter: Chapter, title: Type.String({ minLength: 1, maxLength: 200 }), content: Type.String({ minLength: 1 }), summary: Type.String({ minLength: 1, maxLength: 10000 }), continuityDelta: Type.Optional(Type.Unknown()), requestId: Type.String({ minLength: 1, maxLength: 500 }) }), run: (params) => engine.commitChapter(params) });
@@ -220,7 +214,7 @@ export default definePluginEntry({
     add({ name: "novel_read_chapter", label: "Read Novel Chapter", description: "Read a committed chapter with parsed body, hash, revision, summary, delta and closure.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter }), run: (params) => engine.readChapter(params) });
     add({ name: "novel_revise_chapter", label: "Revise Novel Chapter", description: "CAS-revise an existing chapter through the current project length, audit and quality gates while preserving the prior version.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, title: Type.Optional(Type.String({ maxLength: 200 })), content: Type.String({ minLength: 1 }), summary: Type.Optional(Type.String({ maxLength: 10000 })), continuityDelta: Type.Optional(Type.Unknown()), changeNote: Type.Optional(Type.String({ maxLength: 5000 })), expectedBodySha256: Type.Optional(Sha256), expectedRevision: Type.Optional(Revision), requestId: Type.String({ minLength: 1, maxLength: 500 }) }), run: (params) => engine.reviseChapter(params) });
 
-    add({ name: "novel_chapter_closure_record", label: "Record Chapter Closure", description: "Hash-bind closure status and durable evidence for causal, foreshadowing, Promise, relationship, opposition, signature, state and memory updates.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, bodySha256: Sha256, operations: Type.Object({ causalEvents: Type.Optional(ClosureOperation), foreshadowing: Type.Optional(ClosureOperation), promisePayoff: Type.Optional(ClosureOperation), relationshipGraph: Type.Optional(ClosureOperation), oppositionClocks: Type.Optional(ClosureOperation), chapterSignature: Type.Optional(ClosureOperation), dynamicState: Type.Optional(ClosureOperation), memoryIndex: Type.Optional(ClosureOperation) }, { additionalProperties: false }), note: Type.Optional(Type.String({ maxLength: 10000 })) }), run: (params) => engine.recordChapterClosure(params) });
+    add({ name: "novel_chapter_closure_record", label: "Record Chapter Closure", description: "Hash-bind closure status and durable evidence for causal, foreshadowing, Promise, relationship, opposition, signature, state and memory updates.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, bodySha256: Sha256, operations: Type.Object({ causalEvents: Type.Optional(ClosureOperationInput), foreshadowing: Type.Optional(ClosureOperationInput), promisePayoff: Type.Optional(ClosureOperationInput), relationshipGraph: Type.Optional(ClosureOperationInput), oppositionClocks: Type.Optional(ClosureOperationInput), chapterSignature: Type.Optional(ClosureOperationInput), dynamicState: Type.Optional(ClosureOperationInput), memoryIndex: Type.Optional(ClosureOperationInput) }, { additionalProperties: false }), note: Type.Optional(Type.String({ maxLength: 10000 })) }), run: (params) => engine.recordChapterClosure(params) });
     add({ name: "novel_chapter_closure_status", label: "Read Chapter Closure", description: "Read chapter closure completeness and verify its current body-hash binding.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter }), run: (params) => engine.chapterClosureStatus(params) });
     add({ name: "novel_project_integrity_check", label: "Check Novel Project Integrity", description: "Recover pending transactions, validate all chapter/receipt/hash/state/memory bindings and optionally perform safe metadata repairs.", parameters: Type.Object({ projectId: ProjectId, repair: Type.Optional(Type.Boolean()) }), run: (params) => engine.projectIntegrityCheck(params) });
   }

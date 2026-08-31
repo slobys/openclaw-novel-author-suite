@@ -6,7 +6,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = path.join(root, "src");
 const distDir = path.join(root, "dist");
 await fs.mkdir(distDir, { recursive: true });
-for (const name of ["engine.js", "index.js", "utils.js"]) {
+for (const name of ["engine.js", "index.js", "tool-schemas.js", "utils.js"]) {
   const source = path.join(sourceDir, name);
   const target = path.join(distDir, name);
   await fs.copyFile(source, target);

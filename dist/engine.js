@@ -31,8 +31,12 @@ import {
   writeJson
 } from "./utils.js";
 
-export const ENGINE_VERSION = "0.4.1";
+export const ENGINE_VERSION = "0.4.5";
 export const ENGINE_SCHEMA_VERSION = 2;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 const IDEA_SCORE_WEIGHTS = {
   originality: 0.25,
@@ -605,9 +609,9 @@ export class NovelEngine {
       maxReferenceBytes: config.maxReferenceBytes ?? 20 * 1024 * 1024,
       referenceChunkChars: config.referenceChunkChars ?? 12000,
       minChapterChars: config.minChapterChars ?? 800,
-      minChapterHanChars: config.minChapterHanChars ?? 2600,
-      targetChapterHanChars: config.targetChapterHanChars ?? 3000,
-      targetChapterHanCharsMax: config.targetChapterHanCharsMax ?? 3400,
+      minChapterHanChars: config.minChapterHanChars ?? 2000,
+      targetChapterHanChars: config.targetChapterHanChars ?? 2600,
+      targetChapterHanCharsMax: config.targetChapterHanCharsMax ?? 3200,
       requireChapterAudit: config.requireChapterAudit ?? true,
       requireCompleteAuditChecks: config.requireCompleteAuditChecks ?? true,
       requireQualityGate: config.requireQualityGate ?? true,
@@ -616,6 +620,7 @@ export class NovelEngine {
       requireClosureReceipt: config.requireClosureReceipt ?? true,
       rejectEmbeddedChapterHeading: config.rejectEmbeddedChapterHeading ?? true,
       lockStaleMs: config.lockStaleMs ?? 10 * 60 * 1000,
+      lockAcquireTimeoutMs: config.lockAcquireTimeoutMs ?? 15 * 1000,
       maxArtifactChars: config.maxArtifactChars ?? 500000,
       maxContinuityDeltaChars: config.maxContinuityDeltaChars ?? 200000,
       maxMemoryRecords: config.maxMemoryRecords ?? 10000,
@@ -755,46 +760,112 @@ export class NovelEngine {
   async withProjectLock(projectDir, action) {
     const lockPath = resolveInside(projectDir, ".write.lock");
     const token = sha256(`${process.pid}:${nowIso()}:${Math.random()}`);
-    const lockPayload = { pid: process.pid, hostname: os.hostname(), token, createdAt: nowIso() };
-    const acquire = async () => {
+    const lockPayload = { leaseVersion: 1, pid: process.pid, hostname: os.hostname(), token, createdAt: nowIso() };
+    const acquireStartedAt = Date.now();
+    let replacedStaleLock = null;
+
+    const createLock = async () => {
+      let handle;
       try {
-        const handle = await fs.open(lockPath, "wx", 0o600);
-        await handle.writeFile(JSON.stringify(lockPayload), "utf8");
+        handle = await fs.open(lockPath, "wx", 0o600);
+        await handle.writeFile(JSON.stringify(replacedStaleLock ? { ...lockPayload, replacedStaleLock } : lockPayload), "utf8");
         await handle.sync();
-        await handle.close();
-        return;
+        return true;
       } catch (error) {
-        if (error.code !== "EEXIST") throw error;
+        if (error.code === "EEXIST") return false;
+        throw error;
+      } finally {
+        await handle?.close().catch(() => {});
       }
-      let previous = null;
-      let stat = null;
-      try {
-        previous = await readJson(lockPath);
-        stat = await fs.stat(lockPath);
-      } catch (error) {
-        if (error.code === "ENOENT") return acquire();
-        if (error.code === "JSON_CORRUPT") {
+    };
+
+    const acquire = async () => {
+      while (!(await createLock())) {
+        let previous = null;
+        let stat = null;
+        try {
+          previous = await readJson(lockPath);
           stat = await fs.stat(lockPath);
-        } else {
-          throw error;
+        } catch (error) {
+          if (error.code === "ENOENT") continue;
+          if (error.code === "JSON_CORRUPT") {
+            try {
+              stat = await fs.stat(lockPath);
+            } catch (statError) {
+              if (statError.code === "ENOENT") continue;
+              throw statError;
+            }
+          } else {
+            throw error;
+          }
         }
+
+        const ageMs = stat ? Math.max(0, Date.now() - stat.mtimeMs) : 0;
+        const sameHost = previous?.hostname === os.hostname();
+        const ownerPid = Number(previous?.pid);
+        const sameHostAlive = sameHost && isPidAlive(ownerPid);
+        const sameHostOwnerDead = sameHost && Number.isInteger(ownerPid) && ownerPid > 0 && !sameHostAlive;
+        if (sameHostOwnerDead || ageMs > this.config.lockStaleMs) {
+          let unchanged = false;
+          try {
+            const currentStat = await fs.stat(lockPath);
+            if (previous?.token) {
+              const current = await readJson(lockPath);
+              unchanged = current.token === previous.token;
+            } else {
+              unchanged = currentStat.mtimeMs === stat?.mtimeMs && currentStat.size === stat?.size;
+            }
+          } catch (error) {
+            if (error.code === "ENOENT") continue;
+            if (error.code !== "JSON_CORRUPT") throw error;
+          }
+          if (unchanged) {
+            await fs.unlink(lockPath).catch(() => {});
+            replacedStaleLock = { previous, ageMs, sameHostAlive, sameHostOwnerDead, replacedAt: nowIso() };
+          }
+          continue;
+        }
+
+        const waitedMs = Date.now() - acquireStartedAt;
+        if (waitedMs >= this.config.lockAcquireTimeoutMs) {
+          throw codedError("PROJECT_WRITE_LOCKED", "This novel project is already being written.", {
+            previous,
+            ageMs,
+            sameHostAlive,
+            sameHostOwnerDead,
+            waitedMs,
+            lockAcquireTimeoutMs: this.config.lockAcquireTimeoutMs
+          });
+        }
+        await delay(Math.min(100, Math.max(1, this.config.lockAcquireTimeoutMs - waitedMs)));
       }
-      const sameHostAlive = previous?.hostname === os.hostname() && isPidAlive(Number(previous?.pid));
-      const ageMs = stat ? Date.now() - stat.mtimeMs : 0;
-      if (sameHostAlive || ageMs <= this.config.lockStaleMs) {
-        throw codedError("PROJECT_WRITE_LOCKED", "This novel project is already being written.", { previous, ageMs });
-      }
-      await fs.unlink(lockPath).catch(() => {});
-      const handle = await fs.open(lockPath, "wx", 0o600);
-      await handle.writeFile(JSON.stringify({ ...lockPayload, replacedStaleLock: true, previous }), "utf8");
-      await handle.sync();
-      await handle.close();
     };
 
     await acquire();
+    const heartbeatMs = Math.max(250, Math.min(30000, Math.floor(this.config.lockStaleMs / 3)));
+    let heartbeatBusy = false;
+    const heartbeat = setInterval(() => {
+      if (heartbeatBusy) return;
+      heartbeatBusy = true;
+      void (async () => {
+        try {
+          const current = await readJson(lockPath);
+          if (current.token === token) {
+            const timestamp = new Date();
+            await fs.utimes(lockPath, timestamp, timestamp);
+          }
+        } catch {
+          // A failed heartbeat is handled by token-aware cleanup or stale-lock recovery.
+        } finally {
+          heartbeatBusy = false;
+        }
+      })();
+    }, heartbeatMs);
+    heartbeat.unref?.();
     try {
       return await action();
     } finally {
+      clearInterval(heartbeat);
       try {
         const current = await readJson(lockPath);
         if (current.token === token) await fs.unlink(lockPath);

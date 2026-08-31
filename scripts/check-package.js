@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [
-  "package.json", "package-lock.json", "openclaw.plugin.json", "README.md", "UPGRADE-V5.md", "AUDIT-REPORT.md",
+  "package.json", "package-lock.json", "openclaw.plugin.json", "README.md", "UPGRADE-0.4.5.md", "AUDIT-REPORT.md",
   "src/index.js", "src/engine.js", "src/utils.js", "dist/index.js", "dist/engine.js", "dist/utils.js",
   "skills/novel-author/SKILL.md", "test/engine.test.js"
 ];
