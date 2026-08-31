@@ -13,6 +13,10 @@ cat > "${TEST_ROOT}/bin/openclaw" <<'FAKE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf '%s\n' "$*" >> "${FAKE_OPENCLAW_LOG}"
+if [[ "${FAKE_OPENCLAW_LEGACY:-0}" == "1" && " $* " == *" --accept-capabilities "* ]]; then
+  printf '%s\n' 'OpenClaw does not recognize option "--accept-capabilities".' >&2
+  exit 1
+fi
 if [[ "$1 $2" == "agents list" ]]; then
   if [[ "${FAKE_AGENT_EXISTS:-0}" == "1" ]]; then
     printf '[{"id":"novel-author","workspace":"%s"}]\n' "${FAKE_AGENT_WORKSPACE}"
@@ -39,7 +43,8 @@ test -f "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
 grep -q 'V5.4.0' "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-author/memory/private.md")" = 'private memory'
 find "${OPENCLAW_STATE_DIR}/backups/novel-author-suite" -name AGENTS.md -type f | grep -q .
-grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.6 --force' "${FAKE_OPENCLAW_LOG}"
+grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.7 --force --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
+grep -q 'plugins enable novel-engine --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
 grep -q 'minChapterHanChars 2000 --strict-json' "${FAKE_OPENCLAW_LOG}"
 grep -q 'targetChapterHanChars 2600 --strict-json' "${FAKE_OPENCLAW_LOG}"
 grep -q 'targetChapterHanCharsMax 3200 --strict-json' "${FAKE_OPENCLAW_LOG}"
@@ -47,9 +52,12 @@ grep -q 'gateway restart --safe' "${FAKE_OPENCLAW_LOG}"
 
 export FAKE_AGENT_EXISTS=1
 export FAKE_AGENT_WORKSPACE="${OPENCLAW_STATE_DIR}/workspace-novel-author"
+export FAKE_OPENCLAW_LEGACY=1
 bash "${REPO_ROOT}/install.sh"
 
 test "$(grep -c 'agents add novel-author' "${FAKE_OPENCLAW_LOG}")" -eq 1
+grep -q '^plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.7 --force$' "${FAKE_OPENCLAW_LOG}"
+grep -q '^plugins enable novel-engine$' "${FAKE_OPENCLAW_LOG}"
 if grep -q 'agents.entries' "${FAKE_OPENCLAW_LOG}"; then
   printf 'installer must not write version-specific agent roster paths\n' >&2
   exit 1

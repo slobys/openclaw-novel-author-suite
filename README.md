@@ -1,6 +1,6 @@
 # OpenClaw Novel Author Suite
 
-面向 OpenClaw 的长篇小说全流程套件：`Novel Engine 0.4.6` 持久化插件 + `Novel Author V5.4.0 Balanced-Lite` Agent Workspace。
+面向 OpenClaw 的长篇小说全流程套件：`Novel Engine 0.4.7` 持久化插件 + `Novel Author V5.4.0 Balanced-Lite` Agent Workspace。
 
 它提供逐章隔离 Writer、角色化精简资料包、17类随稿审计、两个低 Token 独立审稿会话、幂等取消、可恢复提交、动态状态、三级记忆、长期故事台账、Closure 与完整性检查。
 
@@ -20,7 +20,7 @@
 只需执行一条总入口命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.0/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | bash
 ```
 
 终端会显示：
@@ -47,16 +47,16 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 
 ```bash
 # 只安装小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.0/setup.sh | bash -s -- 1
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | bash -s -- 1
 
 # 只安装小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.0/setup.sh | bash -s -- 2
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | bash -s -- 2
 
 # 无交互确认：安全卸载小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
 
 # 无交互确认：安全卸载小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
 ```
 
 ## 系统逻辑结构
@@ -159,12 +159,12 @@ openclaw-novel-author-suite/
 适用于 Linux、群晖/QNAP 等 NAS SSH 环境。安装前请先确认你信任本仓库，因为 OpenClaw 插件会在 Gateway 进程中运行代码。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.6/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.7/install.sh | bash
 ```
 
 安装器会：
 
-1. 从固定标签 `v0.4.6` 安装并启用 `novel-engine`；
+1. 从固定标签 `v0.4.7` 安装并启用 `novel-engine`，OpenClaw 2026.8.1+ 会显式完成插件能力授权；
 2. 把公共 Agent 模板部署到 `~/.openclaw/workspace-novel-author`；
 3. 已存在的同名 Workspace 文件先备份，不覆盖 `memory/`、`exports/`、`.novel-runtime/` 或小说数据；
 4. 创建或更新 `novel-author` Agent；
@@ -195,7 +195,7 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 ## 卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.6/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.7/uninstall.sh | bash
 ```
 
 卸载只移除插件，不删除 Agent Workspace、会话或 `~/.openclaw/data/novels` 小说数据。
@@ -203,8 +203,8 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 ## 手动安装
 
 ```bash
-openclaw plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.6 --force
-openclaw plugins enable novel-engine
+openclaw plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.7 --force --accept-capabilities
+openclaw plugins enable novel-engine --accept-capabilities
 openclaw config validate
 openclaw gateway restart
 openclaw plugins inspect novel-engine --runtime --json
@@ -220,7 +220,7 @@ openclaw plugins inspect novel-engine --runtime --json
 
 - [Novel Engine 技术说明](docs/PLUGIN.md)
 - [Novel Author Workspace 说明](docs/WORKSPACE.md)
-- [0.4.6 升级说明](UPGRADE-0.4.6.md)
+- [0.4.7 升级说明](UPGRADE-0.4.7.md)
 - [安全策略](SECURITY.md)
 
 ## 开发验证

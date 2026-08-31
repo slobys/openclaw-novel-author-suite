@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="0.4.6"
+SUITE_VERSION="0.4.7"
 REPOSITORY="slobys/openclaw-novel-author-suite"
 REF="${NOVEL_SUITE_REF:-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
@@ -14,6 +14,27 @@ TEMP_DIR=""
 log() { printf '[novel-author-suite] %s\n' "$*"; }
 die() { printf '[novel-author-suite] ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
+
+run_with_capability_consent() {
+  local command_log status
+  command_log="$(mktemp "${TMPDIR:-/tmp}/novel-author-capabilities.XXXXXX")"
+  set +e
+  "$@" --accept-capabilities 2>&1 | tee "${command_log}"
+  status="${PIPESTATUS[0]}"
+  set -e
+  if [[ "${status}" == "0" ]]; then
+    rm -f -- "${command_log}"
+    return 0
+  fi
+  if grep -Eiq '(does not recognize|unrecognized|unknown).*(--accept-capabilities|accept-capabilities)' "${command_log}"; then
+    rm -f -- "${command_log}"
+    log "This OpenClaw version does not support --accept-capabilities; retrying once with the legacy command."
+    "$@"
+    return
+  fi
+  rm -f -- "${command_log}"
+  return "${status}"
+}
 
 cleanup() {
   if [[ -n "${TEMP_DIR}" && -d "${TEMP_DIR}" ]]; then
@@ -30,6 +51,24 @@ need tar
 need git
 need node
 
+if [[ -z "${SOURCE_DIR}" ]]; then
+  TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/novel-author-suite.XXXXXX")"
+  log "Downloading ${REPOSITORY}@${REF}"
+  curl -fsSL "https://github.com/${REPOSITORY}/archive/${REF}.tar.gz" \
+    | tar -xz -C "${TEMP_DIR}" --strip-components=1
+  SOURCE_DIR="${TEMP_DIR}"
+fi
+
+[[ -f "${SOURCE_DIR}/openclaw.plugin.json" ]] || die "Plugin manifest not found in ${SOURCE_DIR}"
+[[ -d "${SOURCE_DIR}/workspace-novel-author" ]] || die "Workspace template not found in ${SOURCE_DIR}"
+
+plugin_source="${NOVEL_PLUGIN_SOURCE:-git:github.com/${REPOSITORY}@${REF}}"
+log "Installing plugin from ${plugin_source}"
+run_with_capability_consent openclaw plugins install "${plugin_source}" --force
+run_with_capability_consent openclaw plugins enable novel-engine
+
+# Resolve the Agent roster only after capability consent. OpenClaw 2026.8.1+
+# may refuse every other CLI command while an updated plugin is awaiting consent.
 agents_json="$(openclaw agents list --json)" || die "Cannot read the OpenClaw agent roster. Run: openclaw config validate"
 existing_workspace="$(
   printf '%s' "${agents_json}" | node -e '
@@ -65,17 +104,6 @@ case "${WORKSPACE_DIR}" in
   /|"${HOME}"|"${STATE_DIR}") die "Unsafe workspace target: ${WORKSPACE_DIR}" ;;
 esac
 
-if [[ -z "${SOURCE_DIR}" ]]; then
-  TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/novel-author-suite.XXXXXX")"
-  log "Downloading ${REPOSITORY}@${REF}"
-  curl -fsSL "https://github.com/${REPOSITORY}/archive/${REF}.tar.gz" \
-    | tar -xz -C "${TEMP_DIR}" --strip-components=1
-  SOURCE_DIR="${TEMP_DIR}"
-fi
-
-[[ -f "${SOURCE_DIR}/openclaw.plugin.json" ]] || die "Plugin manifest not found in ${SOURCE_DIR}"
-[[ -d "${SOURCE_DIR}/workspace-novel-author" ]] || die "Workspace template not found in ${SOURCE_DIR}"
-
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_dir="${BACKUP_ROOT}/${timestamp}"
 mkdir -p "${WORKSPACE_DIR}" "${backup_dir}"
@@ -94,11 +122,6 @@ while IFS= read -r -d '' source_file; do
   mkdir -p "$(dirname "${target_file}")"
   cp -p -- "${source_file}" "${target_file}"
 done < <(find "${SOURCE_DIR}/workspace-novel-author" -type f -print0)
-
-plugin_source="${NOVEL_PLUGIN_SOURCE:-git:github.com/${REPOSITORY}@${REF}}"
-log "Installing plugin from ${plugin_source}"
-openclaw plugins install "${plugin_source}" --force
-openclaw plugins enable novel-engine
 
 if [[ "${agent_exists}" != "1" ]]; then
   log "Creating novel-author agent"

@@ -1,4 +1,4 @@
-# Novel Author Agent Operating Contract — V5.4.0 Balanced-Lite / Novel Engine 0.4.6
+# Novel Author Agent Operating Contract — V5.4.0 Balanced-Lite / Novel Engine 0.4.7
 
 ## 1. 身份与目标
 
@@ -8,7 +8,7 @@
 
 涉及小说项目的查询、写作、保存、修订或恢复前，依次读取：
 
-1. `TOOLS.md`：确认当前 runtime 真实注册的 Novel Engine 0.4.6 工具、隔离写作/审稿与取消能力；
+1. `TOOLS.md`：确认当前 runtime 真实注册的 Novel Engine 0.4.7 工具、隔离写作/审稿与取消能力；
 2. `novel-author-workflow.yaml`：唯一机器流程、状态、Gate 与失败策略；
 3. `skills/novel-author/SKILL.md`：创作方法和按需协议入口。
 

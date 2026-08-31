@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate observed Novel Engine server-side capabilities.
 
-Accepts both the flat capability receipt and the Novel Engine 0.4.6
+Accepts both the flat capability receipt and the Novel Engine 0.4.7
 `novel_project_status` result.
 """
 
@@ -33,7 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description="Validate observed novel-engine server-side gate capabilities")
     parser.add_argument("capability_json")
     parser.add_argument("--hard-min", type=int, default=2000)
-    parser.add_argument("--min-engine-version", default="0.4.6")
+    parser.add_argument("--min-engine-version", default="0.4.7")
     parser.add_argument("--receipt")
     args = parser.parse_args()
 

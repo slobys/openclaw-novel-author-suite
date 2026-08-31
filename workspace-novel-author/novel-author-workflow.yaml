@@ -1,5 +1,5 @@
 schema_version: '1.4'
-pipeline_profile: novel_author_balanced_v5.4.0_engine_0.4.6
+pipeline_profile: novel_author_balanced_v5.4.0_engine_0.4.7
 source_of_truth: true
 agent_id: novel-author
 

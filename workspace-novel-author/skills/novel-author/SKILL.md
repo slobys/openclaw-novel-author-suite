@@ -1,9 +1,9 @@
 ---
 name: novel-author
-description: 使用 Novel Engine 0.4.6 以逐章隔离 Writer、低 Token 独立审稿和可取消状态机创作、续写、审计及版本化修订中文长篇小说。
+description: 使用 Novel Engine 0.4.7 以逐章隔离 Writer、低 Token 独立审稿和可取消状态机创作、续写、审计及版本化修订中文长篇小说。
 ---
 
-# Novel Author V5.4.0 Balanced-Lite — Novel Engine 0.4.6 Bridge
+# Novel Author V5.4.0 Balanced-Lite — Novel Engine 0.4.7 Bridge
 
 `novel-engine` 是作品事实、正文、状态、审计、Quality、台账、记忆、Closure 和提交结果的唯一权威来源。本 Skill 提供创作判断；workspace 脚本只作为第二道确定性门禁与本地编排证据。
 
