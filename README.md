@@ -11,7 +11,7 @@
 | 分支 | 适合谁 | 一键安装内容 |
 | --- | --- | --- |
 | `novel-author`（当前套件） | 想从零创作和连续写长篇小说 | Novel Author Agent + Novel Engine |
-| [`drama-pipeline`](../../tree/drama-pipeline) | 已有小说，想连续制作 AI 漫剧/短剧 | Novel Producer + Drama Producer + 9 个 DeepWhite Skills |
+| [`drama-pipeline`](../../tree/drama-pipeline) | 已有小说，想连续制作 AI 漫剧/短剧 | Novel Producer + Drama Producer + 10 个 DeepWhite Skills |
 
 小说写作和小说转漫剧可以分别安装；需要两套能力时，也可以依次执行两条安装命令。
 
@@ -20,7 +20,7 @@
 只需执行一条总入口命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.2.0/setup.sh | bash
 ```
 
 终端会显示：
@@ -47,16 +47,16 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 
 ```bash
 # 只安装小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | bash -s -- 1
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.2.0/setup.sh | bash -s -- 1
 
 # 只安装小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | bash -s -- 2
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.2.0/setup.sh | bash -s -- 2
 
 # 无交互确认：安全卸载小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.2.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
 
 # 无交互确认：安全卸载小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.1.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.2.0/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
 ```
 
 ## 系统逻辑结构

@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 REPOSITORY="slobys/openclaw-novel-author-suite"
 NOVEL_REF="${NOVEL_AUTHOR_INSTALL_REF:-v0.4.5}"
-DRAMA_REF="${DRAMA_PIPELINE_INSTALL_REF:-drama-v1.0.1}"
+DRAMA_REF="${DRAMA_PIPELINE_INSTALL_REF:-drama-v1.1.0}"
 choice="${1:-}"
 
 log() { printf '[openclaw-suite-selector] %s\n' "$*"; }
