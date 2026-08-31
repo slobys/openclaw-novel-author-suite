@@ -2,7 +2,7 @@
   "id": "novel-engine",
   "name": "Novel Engine",
   "description": "V5 persistent novel engine with project writing contracts, independent quality gates, recoverable transactions, story ledgers and tiered memory.",
-  "version": "0.4.5",
+  "version": "0.4.1",
   "skills": [
     "skills"
   ],
@@ -186,19 +186,19 @@
         "type": "integer",
         "minimum": 0,
         "maximum": 20000,
-        "default": 2000
+        "default": 2600
       },
       "targetChapterHanChars": {
         "type": "integer",
         "minimum": 0,
         "maximum": 30000,
-        "default": 2600
+        "default": 3000
       },
       "targetChapterHanCharsMax": {
         "type": "integer",
         "minimum": 0,
         "maximum": 50000,
-        "default": 3200
+        "default": 3400
       },
       "requireChapterAudit": {
         "type": "boolean",
@@ -233,12 +233,6 @@
         "minimum": 1000,
         "maximum": 86400000,
         "default": 600000
-      },
-      "lockAcquireTimeoutMs": {
-        "type": "integer",
-        "minimum": 0,
-        "maximum": 120000,
-        "default": 15000
       },
       "maxArtifactChars": {
         "type": "integer",
