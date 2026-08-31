@@ -379,16 +379,29 @@ test("integrity repair safely creates missing chapter metadata", async (t) => {
   assert.equal(repaired.integrityPass, true);
 });
 
-test("prepare chapter packet includes dynamic state, tiered memory and 17-category audit contract", async (t) => {
+test("prepare chapter defaults to a compact role-scoped packet and keeps full profile for diagnosis", async (t) => {
   const { engine } = await fixture(t);
   await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "主角在井边听见铁链声。" });
-  const packet = await engine.prepareChapter("book01");
-  assert.equal(packet.ready, true);
-  assert.equal(packet.chapter, 1);
-  assert.equal(packet.context.auditContract.requiredCategories.length, 17);
-  assert.ok(packet.context.dynamicState);
-  assert.ok(packet.context.memory);
-  assert.ok(packet.packet.includes("三级历史记忆候选"));
+  const compact = await engine.prepareChapter("book01");
+  assert.equal(compact.ready, true);
+  assert.equal(compact.chapter, 1);
+  assert.equal(compact.profile, "compact");
+  assert.equal(compact.role, "writer");
+  assert.equal(compact.context, undefined);
+  assert.ok(compact.packet.includes("Writer 精简资料包"));
+  assert.ok(compact.packet.includes("Writer 随稿审计契约"));
+
+  const continuity = await engine.prepareChapter("book01", { role: "continuity-auditor" });
+  assert.ok(continuity.packet.includes("Continuity Auditor 精简资料包"));
+  assert.ok(!continuity.packet.includes("最近章节节奏指纹"));
+
+  const full = await engine.prepareChapter("book01", { profile: "full" });
+  assert.equal(full.profile, "full");
+  assert.equal(full.context.auditContract.requiredCategories.length, 17);
+  assert.ok(full.context.dynamicState);
+  assert.ok(full.context.memory);
+  assert.ok(full.packet.includes("三级历史记忆候选"));
+  assert.ok(compact.packet.length < full.packet.length);
 });
 
 test("reference import is constrained to configured roots", async (t) => {

@@ -1,5 +1,5 @@
-schema_version: '1.3'
-pipeline_profile: novel_author_balanced_v5.3.2_engine_0.4.5
+schema_version: '1.4'
+pipeline_profile: novel_author_balanced_v5.4.0_engine_0.4.6
 source_of_truth: true
 agent_id: novel-author
 
@@ -26,26 +26,37 @@ defaults:
   memory_short_items: 5
   memory_mid_items: 12
   memory_long_top_k: 8
-  reviewer_thinking: medium
+  writer_thinking: medium
+  writer_context: isolated
+  writer_run_timeout_seconds: 900
+  reviewer_thinking: low
   reviewer_context: isolated
+  reviewer_run_timeout_seconds: 600
   critical_chapter_thinking: high
   critical_chapter_requires: [explicit_user_request, volume_boundary, major_reversal, finale]
 
 state_machine:
   normal_path: [pending, preparing, drafting, length_gate, auditing, quality_gate, precommit_gate, committing, closing, integrity_gate, committed]
-  exceptional_states: [failed, blocked, reconciling]
+  exceptional_states: [failed, blocked, reconciling, cancelling, cancelled]
   require_exact_next_state: true
   require_latest_revision_for_mutation: true
   committed_is_terminal: true
+  cancelled_is_terminal: true
 
 safety:
   strict_serial_chapters: true
-  isolated_child_sessions: spawn_required_reviewers_then_sessions_yield
+  cancellation_guard_before_every_stage_spawn_retry_and_completion_event: true
+  isolated_child_sessions: spawn_writer_then_required_reviewers_with_role_scoped_packets
+  fresh_writer_session_per_chapter: true
+  main_session_role: orchestration_only
+  main_session_must_not_draft_or_expand_body: true
   independent_review_sessions_required: true
   reuse_review_sessions_within_same_chapter: true
   replacement_session_only_when: [unreachable, failed, timed_out, wrong_role]
   forbid_semantic_rerun_on: [schema_error, payload_error, permission_error, network_error, receipt_format_error]
   forbid_parallel_project_writers: true
+  forbid_new_task_when_job_is_cancelling_or_cancelled: true
+  ignore_late_completion_when_job_is_cancelling_or_cancelled: true
   forbid_commit_as_probe: true
   forbid_auto_retry_on: [401, 403, 404, schema_error, deterministic_business_rejection]
   commit_uncertain_action: novel_commit_status_before_retry
@@ -58,6 +69,7 @@ workflow:
   stage_00_capability_and_integrity_preflight:
     inputs: [TOOLS.md, runtime_tool_registry]
     actions:
+      - skills/novel-author/scripts/job_state.py_guard
       - novel_project_list
       - novel_project_status
       - novel_project_config_read
@@ -78,7 +90,8 @@ workflow:
   stage_10_prepare:
     state: preparing
     actions:
-      - novel_prepare_chapter
+      - skills/novel-author/scripts/job_state.py_guard
+      - novel_prepare_chapter_profile_compact_role_writer
       - novel_dynamic_state_context_if_narrow_query_needed
       - novel_memory_search_if_additional_history_needed
       - novel_story_ledger_query_if_additional_ledger_context_needed
@@ -94,6 +107,28 @@ workflow:
 
   stage_20_plan_and_draft:
     state: drafting
+    actions:
+      - skills/novel-author/scripts/job_state.py_guard
+      - sessions_spawn_context_isolated_role_writer_once
+      - skills/novel-author/scripts/job_state.py_register_task
+      - sessions_yield_once_for_writer_completion
+      - ignore_completion_when_job_guard_denies
+      - skills/novel-author/scripts/writer_handoff_gate.py
+    writer_runtime:
+      normal_chapter: {context: isolated, thinking: medium, runTimeoutSeconds: 900}
+      critical_chapter: {context: isolated, thinking: high, runTimeoutSeconds: 1200}
+      visible_dashboard_session: use_only_when_runtime_schema_supports_visible_true
+      unsupported_visible_option: use_hidden_isolated_session_without_retry
+    writer_contract:
+      receives: [compact_writer_packet, chapter_no, job_id, evidence_paths]
+      must_not_receive: [main_chat_history, full_prepare_context, unrelated_reference_prose]
+      must_write:
+        - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/plan.json
+        - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/chapter.md
+        - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/writer-audit.json
+      returns_only: [writer_session_id, body_path, body_sha256, han_chars, audit_path]
+      performs_17_category_audit_on_final_body: true
+      may_spawn_children: false
     planning:
       alternatives: 2-3
       scene_count: adaptive_default_3_5
@@ -108,6 +143,8 @@ workflow:
     outputs:
       - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/plan.json
       - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/chapter.md
+      - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/writer-audit.json
+      - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/writer-receipt.json
 
   stage_30_length_gate:
     state: length_gate
@@ -121,6 +158,10 @@ workflow:
     revise_only_when: han_chars_below_resolved_hard_min
     automatic_revision:
       max_rounds: 1
+      actor: same_writer_session
+      instruction: report_exact_han_deficit_and_request_targeted_expansion
+      before_send_guard: skills/novel-author/scripts/job_state.py_guard
+      forbid_new_writer_session: true
       before_receipt_required: true
       validator: skills/novel-author/scripts/draft_revision_gate.py
       after_revision_requires:
@@ -140,9 +181,14 @@ workflow:
   stage_40_engine_audit:
     state: auditing
     actions:
-      - novel_logic_audit_prepare_once_per_chapter_unless_engine_facts_changed
-      - perform_17_category_audit_once_per_body_hash
-      - novel_chapter_audit_record
+      - skills/novel-author/scripts/job_state.py_guard
+      - skills/novel-author/scripts/writer_handoff_gate.py
+      - novel_chapter_audit_record_from_writer_audit
+    semantic_policy:
+      audit_actor: isolated_writer_session
+      main_session_full_body_semantic_reread: forbidden
+      audit_must_bind_to_final_body_hash: true
+      audit_rerun_after_body_change: same_writer_session_once
     categories: [facts, timeline, space, motivation, knowledge, worldRules, resources, causality, foreshadowing, originality, voice, sceneDynamics, promiseFairness, relationshipContinuity, emotionCurve, fatigueRisk, oppositionPressure]
     hard_gate:
       - engine_audit_decision_is_pass
@@ -153,9 +199,12 @@ workflow:
   stage_45_independent_quality:
     state: quality_gate
     actions:
+      - skills/novel-author/scripts/job_state.py_guard
+      - novel_prepare_chapter_profile_compact_role_continuity_auditor
+      - novel_prepare_chapter_profile_compact_role_reader_editor
       - create_or_reuse_isolated_continuity_auditor
       - create_or_reuse_isolated_reader_editor
-      - save_spawn_run_id_child_session_key_and_session_id
+      - skills/novel-author/scripts/job_state.py_register_task_for_each_reviewer
       - sessions_yield_until_required_completion_events
       - reconcile_with_subagents_or_sessions_list
       - read_final_reviews_with_sessions_history
@@ -166,9 +215,11 @@ workflow:
       - skills/novel-author/scripts/quality_gate.py
       - novel_chapter_quality_record
     reviewer_runtime:
-      normal_chapter: {context: isolated, thinking: medium}
+      normal_chapter: {context: isolated, thinking: low, runTimeoutSeconds: 600}
       critical_chapter: {context: isolated, thinking: high}
       critical_when: [explicit_user_request, volume_boundary, major_reversal, finale]
+      main_chat_history_inheritance: forbidden
+      full_prepare_packet: forbidden
     reviewer_checks:
       continuity-auditor: [facts, timeline, knowledgeBoundary, stateContinuity, causality, promiseContinuity, relationshipContinuity]
       reader-editor: [readability, pacing, repetition, genreExperience, hookQuality, characterAgency]
@@ -217,6 +268,7 @@ workflow:
   stage_50_precommit_gate:
     state: precommit_gate
     actions:
+      - skills/novel-author/scripts/job_state.py_guard
       - skills/novel-author/scripts/chapter_payload_gate.py
       - skills/novel-author/scripts/precommit_gate.py
     outputs:
@@ -230,7 +282,9 @@ workflow:
 
   stage_60_commit:
     state: committing
-    action: novel_commit_chapter
+    actions:
+      - skills/novel-author/scripts/job_state.py_guard
+      - novel_commit_chapter
     idempotency_key: '{job_id}-ch{chapter_no}'
     hard_gate:
       - engine_confirms_chapter_number
@@ -246,6 +300,7 @@ workflow:
   stage_70_server_closure:
     state: closing
     actions:
+      - skills/novel-author/scripts/job_state.py_guard
       - novel_causal_event_record_for_applicable_changes
       - novel_foreshadowing_upsert_for_applicable_changes
       - novel_story_ledger_upsert_for_promise_relationship_opposition_signature_arc_drift
@@ -278,6 +333,7 @@ workflow:
   stage_80_integrity_gate:
     state: integrity_gate
     actions:
+      - skills/novel-author/scripts/job_state.py_guard
       - skills/novel-author/scripts/chapter_closure.py_verify_as_local_evidence
       - novel_project_integrity_check_repair_false
     hard_gate:
@@ -297,6 +353,25 @@ workflow:
     drift_policy:
       correction_horizon_chapters: 3-8
       silently_rewrite_committed_history: false
+
+cancellation:
+  triggers: [user_says_stop, user_says_cancel, requester_stop_command, recovery_detects_cancelling_job]
+  runtime_fast_stop: '/stop in requester chat cascades to active child sessions'
+  ui_stop_button_note: 'If the UI button only aborts the foreground turn, send /stop and then a plain stop request so the durable job barrier can be recorded.'
+  protocol:
+    - run_job_state_cancel_first_to_enter_cancelling
+    - do_not_spawn_yield_retry_resume_audit_commit_or_process_late_completion
+    - call_subagents_action_list_once
+    - call_subagents_action_cancel_for_every_active_registered_task_id
+    - run_job_state_confirm_cancel_with_actual_cancel_evidence
+  job_commands:
+    request: 'python3 skills/novel-author/scripts/job_state.py cancel --job {job_id} --reason user_requested_stop'
+    guard: 'python3 skills/novel-author/scripts/job_state.py guard --job {job_id} --chapter {chapter_no}'
+    confirm: 'python3 skills/novel-author/scripts/job_state.py confirm-cancel --job {job_id} --evidence {actual_cancel_result}'
+  repeated_cancel_request: idempotent_no_new_task_no_revision_bump
+  interrupted_during_cancel: remain_cancelling_and_block_all_work_until_reconciled
+  late_child_completion: record_for_diagnostics_only_do_not_resume_pipeline
+  cancelled_job_reuse: forbidden_create_new_job_id_for_future_work
 
 failure_policy:
   identical_error_second_failure: blocked

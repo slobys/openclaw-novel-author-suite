@@ -23,8 +23,9 @@ STATES = [
     "committed",
 ]
 NEXT_STATE = {current: following for current, following in zip(STATES, STATES[1:])}
-EXCEPTION_STATES = {"failed", "blocked", "reconciling"}
-SCHEMA_VERSION = 3
+EXCEPTION_STATES = {"failed", "blocked", "reconciling", "cancelling", "cancelled"}
+TERMINAL_STATES = {"committed", "cancelled"}
+SCHEMA_VERSION = 4
 
 
 def now():
@@ -53,6 +54,7 @@ def load_path(path: Path):
     for chapter in data["chapters"].values():
         chapter.setdefault("failureCounts", {})
         chapter.setdefault("lastSafeState", chapter.get("state", "pending"))
+        chapter.setdefault("taskRegistry", [])
     return data
 
 
@@ -75,6 +77,10 @@ def save(path: Path, data, expected_revision=None):
 
 def overall(job):
     states = [chapter["state"] for chapter in job["chapters"].values()]
+    if any(state == "cancelling" for state in states):
+        return "cancelling"
+    if states and all(state in TERMINAL_STATES for state in states):
+        return "cancelled" if any(state == "cancelled" for state in states) else "completed"
     if states and all(state == "committed" for state in states):
         return "completed"
     if any(state in {"failed", "blocked", "reconciling"} for state in states):
@@ -84,7 +90,7 @@ def overall(job):
 
 def current_chapter(job):
     for chapter_no in sorted(int(key) for key in job["chapters"]):
-        if job["chapters"][str(chapter_no)]["state"] != "committed":
+        if job["chapters"][str(chapter_no)]["state"] not in TERMINAL_STATES:
             return chapter_no
     return None
 
@@ -198,6 +204,8 @@ def mutate(args, callback):
     with file_lock(path):
         data = load_path(path)
         require_revision(args, data)
+        if data.get("status") in {"cancelling", "cancelled"}:
+            raise SystemExit(f"job is {data.get('status')}; no stage transition, retry or new task is allowed")
         callback(data)
         data["status"] = overall(data)
         save(path, data, expected_revision=args.expect_revision)
@@ -213,7 +221,7 @@ def cmd_create(args):
     with file_lock(project_lock):
         for existing in root.glob("*.json"):
             candidate = load_path(existing)
-            if candidate.get("projectId") == args.project and candidate.get("status") != "completed":
+            if candidate.get("projectId") == args.project and candidate.get("status") not in {"completed", "cancelled"}:
                 raise SystemExit(
                     f"active job already exists for project {args.project}: {candidate.get('jobId')}"
                 )
@@ -233,6 +241,7 @@ def cmd_create(args):
                 "requestId": f"{job_id}-ch{number}",
                 "lastError": None,
                 "failureCounts": {},
+                "taskRegistry": [],
                 "updatedAt": now(),
             }
             for number in range(args.start, args.end + 1)
@@ -393,6 +402,138 @@ def cmd_reconcile(args):
     print(json.dumps(data["chapters"][str(args.chapter)], ensure_ascii=False, indent=2))
 
 
+def cmd_register_task(args):
+    if not any([args.task_id, args.run_id, args.session_key]):
+        raise SystemExit("register-task requires --task-id, --run-id or --session-key")
+
+    def apply(data):
+        chapter = chapter_record(data, args.chapter)
+        registry = chapter.setdefault("taskRegistry", [])
+        match = next(
+            (
+                item for item in registry
+                if (args.task_id and item.get("taskId") == args.task_id)
+                or (args.run_id and item.get("runId") == args.run_id)
+                or (args.session_key and item.get("sessionKey") == args.session_key)
+            ),
+            None,
+        )
+        if match is None:
+            match = {"role": args.role, "registeredAt": now()}
+            registry.append(match)
+        match.update({
+            "role": args.role,
+            "taskId": args.task_id or match.get("taskId"),
+            "runId": args.run_id or match.get("runId"),
+            "sessionKey": args.session_key or match.get("sessionKey"),
+            "status": "accepted",
+            "updatedAt": now(),
+        })
+        chapter["updatedAt"] = now()
+
+    data = mutate(args, apply)
+    print(json.dumps(data["chapters"][str(args.chapter)]["taskRegistry"], ensure_ascii=False, indent=2))
+
+
+def cancellation_targets(data):
+    task_ids = []
+    run_ids = []
+    session_keys = []
+    for chapter in data.get("chapters", {}).values():
+        for item in chapter.get("taskRegistry", []):
+            if item.get("taskId"):
+                task_ids.append(item["taskId"])
+            if item.get("runId"):
+                run_ids.append(item["runId"])
+            if item.get("sessionKey"):
+                session_keys.append(item["sessionKey"])
+    return {
+        "taskIds": sorted(set(task_ids)),
+        "runIds": sorted(set(run_ids)),
+        "sessionKeys": sorted(set(session_keys)),
+    }
+
+
+def cmd_cancel(args):
+    root = Path(args.dir)
+    path = job_path(root, args.job)
+    with file_lock(path):
+        data = load_path(path)
+        if data.get("status") == "completed":
+            raise SystemExit("completed job cannot be cancelled")
+        if data.get("status") not in {"cancelling", "cancelled"}:
+            requested_at = now()
+            for chapter in data["chapters"].values():
+                if chapter.get("state") not in TERMINAL_STATES:
+                    chapter["stateBeforeCancel"] = chapter.get("state")
+                    chapter["state"] = "cancelling"
+                    chapter["lastError"] = None
+                    chapter["updatedAt"] = requested_at
+            data["status"] = "cancelling"
+            data["cancellation"] = {
+                "reason": args.reason,
+                "requestedAt": requested_at,
+                "completedAt": None,
+                "retryAllowed": False,
+            }
+            save(path, data, expected_revision=int(data.get("revision", 0)))
+        output = {
+            "jobId": data.get("jobId"),
+            "projectId": data.get("projectId"),
+            "status": data.get("status"),
+            "revision": data.get("revision"),
+            "cancellation": data.get("cancellation"),
+            "cancelTargets": cancellation_targets(data),
+            "nextAction": "Call subagents action=cancel for every active taskId, then run confirm-cancel. Do not spawn, retry or resume.",
+        }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def cmd_confirm_cancel(args):
+    root = Path(args.dir)
+    path = job_path(root, args.job)
+    with file_lock(path):
+        data = load_path(path)
+        if data.get("status") == "completed":
+            raise SystemExit("completed job cannot be cancelled")
+        if data.get("status") == "cancelled":
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return
+        if data.get("status") != "cancelling":
+            raise SystemExit("confirm-cancel requires a prior cancel request")
+        completed_at = now()
+        for chapter in data["chapters"].values():
+            if chapter.get("state") != "committed":
+                chapter["state"] = "cancelled"
+                chapter["updatedAt"] = completed_at
+        data["status"] = "cancelled"
+        cancellation = data.setdefault("cancellation", {})
+        cancellation["completedAt"] = completed_at
+        cancellation["evidence"] = args.evidence
+        cancellation["retryAllowed"] = False
+        save(path, data, expected_revision=int(data.get("revision", 0)))
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def cmd_guard(args):
+    _, data = load(Path(args.dir), args.job)
+    chapter = data.get("chapters", {}).get(str(args.chapter)) if args.chapter else None
+    blocked = data.get("status") in {"cancelling", "cancelled"} or (
+        chapter is not None and chapter.get("state") in {"cancelling", "cancelled"}
+    )
+    result = {
+        "jobId": data.get("jobId"),
+        "projectId": data.get("projectId"),
+        "chapter": args.chapter,
+        "jobStatus": data.get("status"),
+        "chapterState": chapter.get("state") if chapter else None,
+        "allowed": not blocked,
+        "rule": "A cancelled or cancelling job may not spawn, retry, resume, audit, commit or process completion events.",
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 3 if blocked else 0
+
+
 def cmd_show(args):
     _, data = load(Path(args.dir), args.job)
     print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -409,7 +550,7 @@ def cmd_active(args):
                 continue
             if args.project and data.get("projectId") != args.project:
                 continue
-            if data.get("status") != "completed":
+            if data.get("status") not in {"completed", "cancelled"}:
                 output.append(
                     {
                         "jobId": data.get("jobId"),
@@ -475,6 +616,29 @@ def main():
     command.add_argument("--evidence", required=True)
     command.set_defaults(func=cmd_reconcile)
 
+    command = sub.add_parser("register-task")
+    add_mutation_args(command)
+    command.add_argument("--role", choices=["writer", "continuity-auditor", "reader-editor"], required=True)
+    command.add_argument("--task-id")
+    command.add_argument("--run-id")
+    command.add_argument("--session-key")
+    command.set_defaults(func=cmd_register_task)
+
+    command = sub.add_parser("cancel")
+    command.add_argument("--job", required=True)
+    command.add_argument("--reason", default="user_requested_stop")
+    command.set_defaults(func=cmd_cancel)
+
+    command = sub.add_parser("confirm-cancel")
+    command.add_argument("--job", required=True)
+    command.add_argument("--evidence", required=True)
+    command.set_defaults(func=cmd_confirm_cancel)
+
+    command = sub.add_parser("guard")
+    command.add_argument("--job", required=True)
+    command.add_argument("--chapter", type=int)
+    command.set_defaults(func=cmd_guard)
+
     command = sub.add_parser("show")
     command.add_argument("--job", required=True)
     command.set_defaults(func=cmd_show)
@@ -485,7 +649,9 @@ def main():
 
     args = parser.parse_args()
     try:
-        args.func(args)
+        result = args.func(args)
+        if isinstance(result, int):
+            return result
     except LockTimeout as exc:
         raise SystemExit(str(exc))
 

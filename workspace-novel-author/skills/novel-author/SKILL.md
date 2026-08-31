@@ -1,9 +1,9 @@
 ---
 name: novel-author
-description: 使用 Novel Engine 0.4.5 创作、续写、审计和版本化修订中文长篇小说；维护跨章因果、伏笔、Promise/Payoff、人物关系、对手时钟、动态状态、三级记忆、类型体验、可恢复提交与服务端完整性闭环。
+description: 使用 Novel Engine 0.4.6 以逐章隔离 Writer、低 Token 独立审稿和可取消状态机创作、续写、审计及版本化修订中文长篇小说。
 ---
 
-# Novel Author V5.3.2 Balanced — Novel Engine 0.4.5 Bridge
+# Novel Author V5.4.0 Balanced-Lite — Novel Engine 0.4.6 Bridge
 
 `novel-engine` 是作品事实、正文、状态、审计、Quality、台账、记忆、Closure 和提交结果的唯一权威来源。本 Skill 提供创作判断；workspace 脚本只作为第二道确定性门禁与本地编排证据。
 
@@ -30,25 +30,31 @@ description: 使用 Novel Engine 0.4.5 创作、续写、审计和版本化修�
 ## 单章准备
 
 1. `novel_project_status` 与 `novel_project_config_read`；
-2. `novel_prepare_chapter` 获取服务端资料包；
+2. `novel_prepare_chapter(profile=compact, role=writer)` 获取精简资料包；只有关键章或诊断才使用 full；
 3. 仅在需要窄化历史时调用 `novel_dynamic_state_context`、`novel_memory_search`、`novel_story_ledger_query`；
-4. 内部比较 2–3 个推进方案。
+4. 每章创建一个新的 isolated Writer session，由它内部比较 2–3 个推进方案并写入 `plan.json`、`chapter.md` 和 `writer-audit.json`；主会话只接收路径、Hash、汉字数和 session ID。
 
 优先选择：主角有代价主动选择、因果成立、至少一个关系/信息/Promise/对手压力变化、与近期章节不机械重复，并自然兑现 `genreProfile`。
 
 ## 审计与质量
 
-最终正文先完成本地长度和 Payload Gate，再执行 17 项逻辑审计：facts、timeline、space、motivation、knowledge、worldRules、resources、causality、foreshadowing、originality、voice、sceneDynamics、promiseFairness、relationshipContinuity、emotionCurve、fatigueRisk、oppositionPressure。
+隔离 Writer 对最终正文随稿执行 17 项逻辑审计：facts、timeline、space、motivation、knowledge、worldRules、resources、causality、foreshadowing、originality、voice、sceneDynamics、promiseFairness、relationshipContinuity、emotionCurve、fatigueRisk、oppositionPressure。主会话使用 `writer_handoff_gate.py` 校验正文文件、完整审计、Writer session ID 与正文 Hash，不再单独进行一次模型通读。
 
-默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200。达到项目硬下限即通过长度 Gate；理想目标不是强制最低值。只有低于硬下限才允许一次自动修订，并用 `draft_revision_gate.py` 验证正文 Hash 确实变化且达到下限；同 Hash、仍不足或第二次尝试立即 `blocked`。
+默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200。Writer 可把 2300–2900 作为普通章工作区间以留出汉字统计余量；达到项目硬下限即通过长度 Gate，理想目标不是强制最低值。只有低于硬下限才把准确差额发回同一个 Writer 一次，并用 `draft_revision_gate.py` 验证正文 Hash 确实变化且达到下限；禁止主会话补字、新建 Writer 或重复口头承诺扩写。同 Hash、仍不足或第二次尝试立即 `blocked`。
 
-调用 `novel_chapter_audit_record` 保存对最终正文的完整 Audit。随后用两个真实隔离上下文执行 Continuity Auditor 与 Reader Editor，生成 Genre Gate 和 provisional Chapter Signature，并调用 `novel_chapter_quality_record`。Writer 不得自己替代审稿角色。普通章节默认 `thinking=medium`；关键章才提升强度。
+调用 `novel_chapter_audit_record` 保存经 Gate 验证的 Writer Audit。随后分别调用 compact continuity/reader packet，用两个真实隔离上下文执行 Continuity Auditor 与 Reader Editor，生成 Genre Gate 和 provisional Chapter Signature，并调用 `novel_chapter_quality_record`。Writer 不得自己替代审稿角色。普通章节 Writer 默认 `thinking=medium`、reviewer 默认 `thinking=low`；关键章才提升强度。
 
 17 类章节总审计与 reviewer checks 不可混用：Continuity 固定 7 项，Reader 固定 6 项，具体 Schema 与会话复用方式见 `protocols/independent-quality.md`。`note`/`warning` 不自动触发修订；只有阻断问题才修改正文。审稿检查先经 `independent_audit_gate.py` 标准化，Quality 提交必须原样使用回执中的 `engineReviews`，禁止自行生成 `pass：说明`。
 
 提交 Engine Quality 前按同一协议校验五处正文 Hash，并把本地 `genreGatePass` 映射为 Engine 所需的 `genreGate.pass`；不要用服务端报错逐字段试探 Payload。
 
-正文任何修改都使旧 Audit、Quality、Signature 和本地 receipt 失效，但同章修订优先复用原两个审稿 session，对新 Hash 重新出具结论。每章最多一轮自动定点修订；Schema/Payload 错误只修结构，禁止重新运行语义审稿。
+正文任何修改都使旧 Audit、Quality、Signature 和本地 receipt 失效，但同章修订优先复用原 Writer 和两个审稿 session，对新 Hash 重新出具结论。每章最多一轮自动定点修订；Schema/Payload 错误只修结构，禁止重新运行语义审稿。
+
+## 停止与取消
+
+用户要求停止时，先运行 `job_state.py cancel` 建立持久化 `cancelling` 屏障，再用 `subagents(action=list)` 获取活动 `taskId` 并逐个 `subagents(action=cancel)`，最后运行 `job_state.py confirm-cancel`。每次 spawn 后必须用 `job_state.py register-task` 保存任务标识；每个阶段、重试和 completion event 前必须运行 `job_state.py guard`。
+
+`cancelling/cancelled` 状态禁止 spawn、yield、sessions_send、resume、审计、提交与后续章节。迟到的完成事件只记录，不恢复流水线；重复停止不创建任务。运行时需要立即急停时，在创建这些子会话的主聊天发送 `/stop`，再在恢复后完成上述持久化取消对账。
 
 ## Commit 与对账
 

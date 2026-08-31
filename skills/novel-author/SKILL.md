@@ -3,7 +3,7 @@ name: novel-engine-operations
 description: 操作 Novel Engine V5 服务端工具，负责项目状态、审计、提交、对账、Closure、修订和完整性检查；具体小说创作规则由 workspace 的 novel-author Skill 负责。
 ---
 
-# Novel Engine Operations — V5.2
+# Novel Engine Operations — V5.4 Balanced-Lite
 
 `novel-engine` 是作品业务事实、章节正文和提交状态的唯一权威来源。聊天记忆、workspace 缓存、任务文件和本地脚本只负责创作判断、编排或派生校验；冲突时以 `novel_*` 工具返回为准。
 
@@ -28,7 +28,7 @@ description: 操作 Novel Engine V5 服务端工具，负责项目状态、审�
 
 ### 1. Prepare
 
-调用 `novel_prepare_chapter`。资料包包含：
+普通章节调用 `novel_prepare_chapter(profile=compact, role=writer)`；只有关键章或诊断才使用 `profile=full`。精简资料包包含：
 
 - 本章章纲与原创设定；
 - 最近章节摘要、连续性变化和上一章末尾；
@@ -40,7 +40,9 @@ description: 操作 Novel Engine V5 服务端工具，负责项目状态、审�
 
 若返回 `ready:false`，先补齐指定 artifact。若上一章 Closure 未完成且项目要求 Closure，不得绕过。
 
-### 2. Plan and draft
+### 2. Isolated plan and draft
+
+每章创建一个新的 isolated Writer session，主会话只负责编排。Writer 把 `plan.json`、`chapter.md` 和绑定最终正文 Hash 的17类 `writer-audit.json` 写入本章 evidence 目录，返回路径、Hash、汉字数和 Writer session ID；主会话不得自己写正文或再次做一次模型语义审计。
 
 内部比较 2–3 个推进方案。优先选择同时满足以下条件的方案：
 
@@ -55,7 +57,7 @@ Scene 和 Beat 数量服从项目实际 writing contract。标题参数只传纯
 
 ### 3. Logic audit
 
-调用 `novel_logic_audit_prepare`，再用最终正文执行完整审计。至少覆盖：
+Writer 使用 prepare packet 中的审计契约对最终正文执行完整随稿审计。主会话用 `writer_handoff_gate.py` 验证后调用 `novel_chapter_audit_record`，不得为了记录回执再通读正文。至少覆盖：
 
 `facts`、`timeline`、`space`、`motivation`、`knowledge`、`worldRules`、`resources`、`causality`、`foreshadowing`、`originality`、`voice`、`sceneDynamics`、`promiseFairness`、`relationshipContinuity`、`emotionCurve`、`fatigueRisk`、`oppositionPressure`。
 
@@ -63,7 +65,7 @@ Scene 和 Beat 数量服从项目实际 writing contract。标题参数只传纯
 
 ### 4. Independent quality
 
-Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会话 ID。
+Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会话 ID。两个 reviewer 分别使用 `role=continuity-auditor` 与 `role=reader-editor` 的 compact packet；普通章默认 low thinking。
 
 - Continuity Auditor：只审事实、时间线、空间、动机、知识边界、世界规则、资源、因果、伏笔、公平性、关系连续性和对手压力；
 - Reader Editor：只审可读性、重复、节奏、情感、场景动态、人物声音、类型承诺、章节功能和钩子；
@@ -72,6 +74,10 @@ Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会
 生成 Genre Gate 与 provisional Chapter Signature 后调用 `novel_chapter_quality_record`。任何正文修改都会使旧 Audit 和 Quality receipt 的 Hash 失效，必须重新生成。
 
 服务端能验证正文 Hash、审稿角色、三会话 ID 不同、结论和阻断问题；它不能仅凭 ID 证明三个会话在物理上确实隔离，因此编排 Agent 必须真实创建独立上下文。
+
+### Stop and cancel
+
+每次 spawn 后登记 taskId/runId/sessionKey。用户要求停止时先把本地 Job 写成 `cancelling`，再用 `subagents(action=cancel, taskId=...)` 取消本会话树内活动任务，最后确认 `cancelled`。每个阶段和迟到 completion 前必须检查 Guard；`cancelling/cancelled` 不得恢复、重试或创建后台任务。主聊天中的 `/stop` 用于立即级联急停，持久化取消用于阻止重连后复活。
 
 ### 5. Commit
 

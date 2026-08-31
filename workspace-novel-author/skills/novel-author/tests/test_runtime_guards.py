@@ -125,6 +125,55 @@ class ChapterPayloadGateTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["canonicalDisplayTitle"], "第7章 拱地的家伙")
 
 
+class WriterHandoffGateTests(unittest.TestCase):
+    def test_accepts_hash_bound_full_audit_from_isolated_writer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            body = root / "chapter.md"
+            audit = root / "writer-audit.json"
+            receipt = root / "writer-receipt.json"
+            body.write_text("汉" * 2100, encoding="utf-8")
+            body_sha = hashlib.sha256(body.read_bytes()).hexdigest()
+            audit.write_text(json.dumps({
+                "chapterNo": 7,
+                "bodySha256": body_sha,
+                "decision": "pass",
+                "checks": {name: "pass" for name in AUDIT_CHECKS},
+                "issues": [],
+            }), encoding="utf-8")
+            result = run_script(
+                "writer_handoff_gate.py", "--chapter", "7",
+                "--writer-session-id", "agent:novel-author:subagent:writer-7",
+                "--body-file", body, "--audit-file", audit,
+                "--hard-min", "2000", "--receipt", receipt,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(json.loads(receipt.read_text(encoding="utf-8"))["handoffPass"])
+
+    def test_rejects_short_or_hash_mismatched_writer_handoff(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            body = root / "chapter.md"
+            audit = root / "writer-audit.json"
+            body.write_text("汉" * 100, encoding="utf-8")
+            audit.write_text(json.dumps({
+                "chapterNo": 7,
+                "bodySha256": "0" * 64,
+                "decision": "pass",
+                "checks": {name: "pass" for name in AUDIT_CHECKS},
+                "issues": [],
+            }), encoding="utf-8")
+            result = run_script(
+                "writer_handoff_gate.py", "--chapter", "7",
+                "--writer-session-id", "writer-7", "--body-file", body,
+                "--audit-file", audit, "--hard-min", "2000",
+            )
+            self.assertEqual(result.returncode, 2)
+            reasons = json.loads(result.stdout)["reasons"]
+            self.assertTrue(any(reason.startswith("WRITER_BODY_BELOW_HARD_MIN") for reason in reasons))
+            self.assertIn("WRITER_AUDIT_BODY_HASH_MISMATCH", reasons)
+
+
 class JobStateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -169,6 +218,48 @@ class JobStateTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("active job already exists", result.stderr)
+
+    def test_cancel_is_idempotent_blocks_resume_and_releases_project_after_confirmation(self):
+        self.assertEqual(self.set_state(7, "preparing").returncode, 0)
+        revision = self.data()["revision"]
+        registered = self.job(
+            "register-task", "--job", "J1", "--chapter", "7",
+            "--expect-revision", revision, "--role", "writer",
+            "--task-id", "task-writer-7", "--run-id", "run-writer-7",
+            "--session-key", "agent:novel-author:subagent:writer-7",
+        )
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+
+        cancelled = self.job("cancel", "--job", "J1", "--reason", "user pressed stop")
+        self.assertEqual(cancelled.returncode, 0, cancelled.stderr)
+        cancellation = json.loads(cancelled.stdout)
+        self.assertEqual(cancellation["status"], "cancelling")
+        self.assertEqual(cancellation["cancelTargets"]["taskIds"], ["task-writer-7"])
+        first_revision = self.data()["revision"]
+
+        repeated = self.job("cancel", "--job", "J1", "--reason", "duplicate stop")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(self.data()["revision"], first_revision)
+
+        guard = self.job("guard", "--job", "J1", "--chapter", "7")
+        self.assertEqual(guard.returncode, 3)
+        self.assertFalse(json.loads(guard.stdout)["allowed"])
+        blocked_transition = self.set_state(7, "drafting")
+        self.assertNotEqual(blocked_transition.returncode, 0)
+        self.assertIn("no stage transition", blocked_transition.stderr)
+
+        confirmed = self.job(
+            "confirm-cancel", "--job", "J1",
+            "--evidence", "subagents task-writer-7 cancelled",
+        )
+        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+        self.assertEqual(self.data()["status"], "cancelled")
+        self.assertEqual(self.data()["chapters"]["7"]["state"], "cancelled")
+
+        next_job = self.job(
+            "create", "--project", "P1", "--start", "9", "--end", "9", "--job-id", "J2"
+        )
+        self.assertEqual(next_job.returncode, 0, next_job.stderr)
 
     def test_stale_revision_is_rejected(self):
         self.assertEqual(self.set_state(7, "preparing").returncode, 0)

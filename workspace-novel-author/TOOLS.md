@@ -1,4 +1,4 @@
-# novel-author 运行工具契约 — V5.3.2 Balanced / Novel Engine 0.4.5
+# novel-author 运行工具契约 — V5.4.0 Balanced-Lite / Novel Engine 0.4.6
 
 本文件用于启动时确认能力，不替代 `novel-author-workflow.yaml` 的阶段裁决。只承认当前 OpenClaw runtime 真实注册的工具。
 
@@ -47,19 +47,40 @@
 - `novel_chapter_closure_status`
 - `novel_project_integrity_check`
 
+`novel_prepare_chapter` 默认使用：
+
+```json
+{ "projectId": "<projectId>", "profile": "compact", "role": "writer" }
+```
+
+独立审稿前分别请求 `role=continuity-auditor` 和 `role=reader-editor`。只有关键章或诊断才用 `profile=full`；禁止把 full `packet` 与 full `context` 同时塞给普通 Writer。
+
 正式写章至少要求项目/配置、prepare、audit record、quality record、commit、commit status、read、closure status 和 integrity 工具可用。缺失 `novel_chapter_quality_record`、`novel_commit_status` 或 `novel_project_integrity_check` 时，只能产出草稿，不能宣称 V5 服务端闭环完成。
 
-## 隔离审稿能力
+## 隔离写作与审稿能力
 
 正式 commit 要求 Writer、Continuity Auditor、Reader Editor 三个真实且不同的 session ID。必须使用 OpenClaw 当前真实可用的隔离 session/subagent 能力；不得虚构工具名或 session ID。服务端只验证结构化独立性，编排层仍必须真正创建隔离上下文。
 
 推荐的真实生命周期：
 
-1. `sessions_spawn(context=isolated, thinking=medium)` 分别创建两个角色；立即保存返回的 `runId` 与 `childSessionKey`；
-2. 两个创建请求都得到 `status=accepted` 后调用 `sessions_yield`，等待推送完成事件，不轮询；
-3. 恢复后用 `subagents`/`sessions_list` 对账状态，并用 `sessions_history` 读取对应子会话最终结论；
-4. 正文修订时优先用 `sessions_send` 让原两个子会话审核新 Hash；只有原会话不可访问或失败时才 `sessions_spawn` 替换；
-5. 任何创建、等待、回收或替换动作都必须记录真实标识；没有 `runId`、`childSessionKey` 和成功结果时不得声称审稿已完成。
+1. 每章先用 `sessions_spawn(context=isolated, thinking=medium, runTimeoutSeconds=900)` 创建一个全新 Writer。主会话不得自己写正文；
+2. Writer 只接收 compact writer packet，把正文、计划和17类随稿审计写入当前 chapter evidence 目录，最终回复只返回路径、Hash、汉字数和 session ID；
+3. spawn 后立即用 `job_state.py register-task` 保存 `runId`、`childSessionKey`，从 `subagents(action=list)` 获得 `taskId` 后补记；
+4. Writer 完成后运行 `writer_handoff_gate.py` 和 `chapter_length.py`。不足硬下限时只用 `sessions_send` 把准确差额发回同一个 Writer 一次，不创建新 Writer；
+5. 正文定稿后，再用各自 compact packet 创建 Continuity Auditor 与 Reader Editor；普通章 `thinking=low`，关键章才 `high`；
+6. 所需创建请求都得到 `status=accepted` 后调用 `sessions_yield` 等待推送，不轮询；恢复后先运行 job Guard，再用 `sessions_history` 读取最终回执；
+7. 正文修订时优先用 `sessions_send` 让原三个子会话处理新 Hash；只有原会话不可访问、失败、超时或角色错误时才创建替代会话；
+8. 任何创建、等待、回收或替换动作都必须记录真实标识；没有真实 ID 和成功结果时不得声称写作或审稿完成。
+
+若当前 OpenClaw 的 `sessions_spawn` Schema 支持 `visible=true`，Writer 可以创建为 Dashboard 可见会话；不支持时必须直接使用隐藏的 isolated session，禁止因为可见性字段报错而自动重复 spawn。
+
+## 停止与后台任务取消
+
+- 主会话中的 `/stop` 是运行时级联急停，会停止该会话树内的活动子任务；单纯点界面停止按钮若只中断当前回合，还应发送 `/stop`。
+- 用户要求停止时，先执行 `job_state.py cancel` 写入持久化 `cancelling` 屏障，再执行 `subagents(action=list)`；对每个活动 `taskId` 执行 `subagents(action=cancel, taskId=...)`，最后执行 `job_state.py confirm-cancel`。
+- `subagents(action=cancel)` 只能取消当前请求者控制的会话树，所以 Writer 与两个 reviewer 必须由同一个主会话创建和登记。
+- `cancelling/cancelled` 状态下不得 spawn、yield、sessions_send、resume、重试或处理迟到完成事件；每个阶段和 completion event 前都必须运行 `job_state.py guard`。
+- 重复停止必须幂等：不创建新 job、不创建新子会话、不增加 revision；取消中断时保留 `cancelling`，直到下次只做取消对账。
 
 两个角色的 `checks` 与 17 类章节总审计是不同 Schema：
 
@@ -112,6 +133,7 @@
 - `chapter_length.py`
 - `draft_revision_gate.py`
 - `chapter_payload_gate.py`
+- `writer_handoff_gate.py`
 - `independent_audit_gate.py`
 - `genre_promise.py`
 - `quality_gate.py`

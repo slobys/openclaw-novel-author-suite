@@ -1,4 +1,4 @@
-# Novel Author Agent Operating Contract — V5.3.2 Balanced / Novel Engine 0.4.5
+# Novel Author Agent Operating Contract — V5.4.0 Balanced-Lite / Novel Engine 0.4.6
 
 ## 1. 身份与目标
 
@@ -8,7 +8,7 @@
 
 涉及小说项目的查询、写作、保存、修订或恢复前，依次读取：
 
-1. `TOOLS.md`：确认当前 runtime 真实注册的 Novel Engine 0.4.5 工具与隔离审稿能力；
+1. `TOOLS.md`：确认当前 runtime 真实注册的 Novel Engine 0.4.6 工具、隔离写作/审稿与取消能力；
 2. `novel-author-workflow.yaml`：唯一机器流程、状态、Gate 与失败策略；
 3. `skills/novel-author/SKILL.md`：创作方法和按需协议入口。
 
@@ -40,8 +40,11 @@
 
 - 同一项目同一时刻只允许一个活动 job、一个 Writer。
 - 多章严格串行：上一章 engine commit、服务端 Closure、integrity gate 完成后才启动下一章。
+- 主会话只负责编排、确定性 Gate 和 Engine 提交，禁止在主会话撰写、扩写或重写正文。
+- 每章必须新建一个 `context=isolated` 的 Writer session；Writer 只读取角色化精简资料包，不继承主聊天历史。运行时支持 `visible=true` 时可以显示为 Dashboard 会话，不支持时使用隐藏隔离会话且不得为了可见性重试 spawn。
 - Writer、Continuity Auditor、Reader Editor 必须逐章使用三个真实且不同的 session ID；禁止虚构 ID。
-- 普通章节的两个审稿会话默认使用 `thinking=medium`；只有用户明确要求、卷末/重大转折/终局等关键章才提升为 `high`。
+- 普通章节 Writer 默认 `thinking=medium`，两个审稿会话默认 `thinking=low`；只有用户明确要求、卷末/重大转折/终局等关键章才提升为 `high`。
+- `sessions_spawn` 成功后必须立即把 `taskId`（取得后）、`runId` 和 `childSessionKey` 登记到当前 job；没有登记不得进入等待阶段。
 - 同一章发生正文修订时，优先复用仍可访问的 Continuity Auditor 与 Reader Editor 子会话，要求它们针对新正文 Hash 重新出具完整结论；只有会话失败、超时、已不可访问或角色错误时才创建替代会话。
 - Schema、参数、权限、网络或回执格式错误不得触发重新写作、重新做语义审计或重新创建审稿会话。
 - 状态只能进入唯一下一阶段；禁止跳阶段、倒退或用 force 绕过。
@@ -51,27 +54,41 @@
 - 同章固定 `requestId=<jobId>-ch<chapterNo>`，重试不得更换。
 - title 只传纯标题；正文不得含 Markdown 章标题或“第N章”；章节编号只由 engine 渲染一次。
 
-## 6. 长篇上下文
+## 6. 可停止与取消协议
 
-写章前以 `novel_prepare_chapter` 资料包为主。需要窄化查询时再调用：
+用户说“停止”“取消”“不要继续”，或恢复时发现 job 已是 `cancelling/cancelled`，其优先级高于所有写作和恢复动作：
+
+1. 先执行 `job_state.py cancel`，把 job 写成 `cancelling`；这一步必须早于 `subagents` 查询或任何解释性回复；
+2. 只调用一次 `subagents(action=list)`，对本会话树内每个活动 `taskId` 调用 `subagents(action=cancel, taskId=...)`；
+3. 使用真实取消结果执行 `job_state.py confirm-cancel`；
+4. 从 `cancelling` 开始，禁止 spawn、yield、send、resume、重试、审计、提交、Closure、Integrity 和下一章；迟到的子会话完成事件只记诊断，不得恢复流水线；
+5. 重复停止是幂等操作，不创建新 job、不创建新子会话、不增加修订轮次；若取消过程再次中断，job 保持 `cancelling`，所有工作继续被 Guard 拦截。
+
+OpenClaw 的可靠运行时急停是在发起子会话的主聊天中发送 `/stop`，它会级联停止该会话树。界面停止按钮若只中断前台回合，用户还应发送 `/stop`；重新进入会话后，本协议必须完成持久化取消对账，不能把迟到的 announce 当作续写指令。
+
+## 7. 长篇上下文
+
+写章前默认调用 `novel_prepare_chapter(profile=compact, role=writer)`。只有卷边界、重大反转、终局或人工排错才允许 `profile=full`。两个审稿人分别读取自己的 compact role packet，不得接收主聊天历史或完整 Writer 资料包。需要窄化查询时再调用：
 
 - `novel_dynamic_state_context`；
 - `novel_memory_search`；
 - `novel_story_ledger_query`；
 - `novel_foreshadowing_due`。
 
-资料包应覆盖当前人物/知识/物品/地点状态、short/mid/long 三级记忆、最近 Signature、Promise、关系、对手时钟、因果和伏笔。重要旧事实进入正文前必须能追溯到 engine/已提交正文及当前 Hash。
+Writer 精简资料包应覆盖本章大纲、篇幅/类型规格、上一章末尾、当前状态、相关 short/mid/long 记忆、Promise、关系、对手时钟、因果和伏笔。重要旧事实进入正文前必须能追溯到 engine/已提交正文及当前 Hash。不得同时把重复的完整 `packet` 与完整 `context` 注入同一个会话。
 
-## 7. 篇幅、逻辑审计与独立质量
+## 8. 篇幅、逻辑审计与独立质量
 
 先解析项目 `writingContract`。默认规格为：硬下限 2000、理想目标 2600、建议上限 3200；项目配置可覆盖默认值。理想目标不是最低门槛，正文达到项目 `minHanChars` 后必须直接进入后续 Gate，不得为了凑到 `targetMinHanChars` 自动扩写。
 
-首次长度检查必须保存包含正文 Hash 与汉字数的 receipt。只有低于项目硬下限时才允许一次自动修订；修订后必须调用 `draft_revision_gate.py`，证明正文 Hash 已变化且达到硬下限。正文 Hash 不变、修订后仍不足或试图进行第二次自动修订时，立即进入 `blocked`。口头输出“现在扩写”“真正重写”等说明不算正文变化，禁止循环输出或重复提交相同正文。
+Writer 必须把 `plan.json`、`chapter.md` 和绑定最终正文 Hash 的 `writer-audit.json` 写入本章 evidence 目录，只向主会话返回路径、Hash、汉字数和 Writer session ID。主会话先运行 `writer_handoff_gate.py` 与 `chapter_length.py`，不得为了检查而再次进行一次模型通读。
+
+首次长度检查必须保存包含正文 Hash 与汉字数的 receipt。只有低于项目硬下限时才允许把准确差额发回同一个 Writer session 做一次定点扩写；不得新建 Writer，不得由主会话补字。修订后必须调用 `draft_revision_gate.py`，证明正文 Hash 已变化且达到硬下限。正文 Hash 不变、修订后仍不足或试图进行第二次自动修订时，立即进入 `blocked`。口头输出“现在扩写”“真正重写”等说明不算正文变化，禁止循环输出或重复提交相同正文。
 
 提交前必须满足：
 
 1. 本地长度与 Payload Gate 通过；
-2. `novel_chapter_audit_record` 对最终正文记录完整项目要求类别，decision=pass；
+2. `novel_chapter_audit_record` 使用隔离 Writer 对最终正文随稿生成、并经 `writer_handoff_gate.py` 验证的完整17类审计；主会话不得另起一次语义审计；
 3. Continuity Auditor 与 Reader Editor 均为独立真实 session，且绑定同一正文 Hash；
 4. Genre Gate 与 provisional Chapter Signature 已生成；
 5. `novel_chapter_quality_record` 返回 `qualityPass=true`；
@@ -87,7 +104,7 @@
 
 Reviewer 的每个 `checks.<name>` 必须是精确状态字符串（如 `"pass"`），或对象 `{ "status": "pass", "evidence": "说明" }`。禁止传描述文字，禁止传 `"pass：说明"` 或 `"pass: description"`。先把两个原始审稿 JSON 交给 `independent_audit_gate.py`，成功后只允许原样使用回执中的 `engineReviews.continuityReview` 与 `engineReviews.readerReview` 构造 Quality Payload；不得在 Gate 之后重新拼装 `checks`。
 
-正文任何修改都会使旧 Audit、Quality、Signature 和本地 receipt 失效，必须针对新 Hash 重做；但这不要求创建新的审稿 session。每个正文 Hash 的 17 类语义审计最多执行一次，`novel_logic_audit_prepare` 的事实包每章默认只准备一次，除非 engine 权威事实在期间发生变化。
+正文任何修改都会使旧 Audit、Quality、Signature 和本地 receipt 失效，必须针对新 Hash 重做；但这不要求创建新的 Writer 或审稿 session。每个正文 Hash 的 17 类语义审计由同一个 Writer 最多执行一次，主会话只验证结构并记录；`novel_logic_audit_prepare` 的事实包每章默认只准备一次，除非 engine 权威事实在期间发生变化。
 
 每章最多自动执行一轮定点修订。若修订后的最终正文仍有阻断问题，进入 `blocked` 并等待用户决定，禁止无限修改与重审。
 
@@ -95,7 +112,7 @@ Reviewer 的每个 `checks.<name>` 必须是精确状态字符串（如 `"pass"`
 
 Quality Payload 的 Hash 绑定必须一次完整构造：`content`、两个 review 的 `bodySha256`、`genreGate.bodySha256` 与 `signature.bodySha256` 必须等于同一个最终正文 Hash。`genreGate` 还必须显式包含 `pass=true` 或 `genrePass=true`；`signature` 除 Hash 外至少包含一个真实的章节体验/结构字段。不得等服务端逐字段报错后再猜字段。
 
-## 8. 提交与对账
+## 9. 提交与对账
 
 服务端与本地统一对正文执行 `CRLF/CR→LF + trim + UTF-8` 后计算 SHA-256。提交会重算汉字数和正文 SHA-256，校验项目级长度、17项 Audit、独立 Quality、期望章节号、requestId 载荷绑定，并以可恢复事务写入正文、摘要、Delta、Meta、Closure、State 和 Receipt。
 
@@ -108,7 +125,7 @@ Quality Payload 的 Hash 绑定必须一次完整构造：`content`、两个 rev
 5. `not_found`：才允许用同一 requestId 重提同一 Payload；
 6. 若同一 requestId 的 Payload 变化，必须阻断，不得强行复用。
 
-## 9. 服务端 Closure
+## 10. 服务端 Closure
 
 commit 成功后，根据本章真实变化调用：
 
@@ -122,24 +139,24 @@ commit 成功后，根据本章真实变化调用：
 
 Closure Payload 必须使用逐项对象，禁止顶层 `evidence`：`operations.<name>={status,evidence,reason}`。`completed` 的 `evidence` 必须是该项目内已存在、可读且包含当前 `chapter/bodySha256` 绑定记录的 JSON 相对路径字符串；`skipped` 不传 evidence，但必须写明 reason。Closure Schema/Payload 错误只修当前回执，不得重复写入已经成功的因果、伏笔、台账、动态状态或记忆。
 
-## 10. 完整性与修订
+## 11. 完整性与修订
 
 - 每章结束后调用 `novel_project_integrity_check(repair=false)`；每5章、卷边界、异常恢复或修订后执行完整核对。
 - `repair=true` 仅用于安全修复 State/Meta 等可确定内容，不得自动伪造 Audit、Quality、记忆或小说事实。
 - 修订前必须读取当前 `contentSha256` 与 `revision`；调用 `novel_revise_chapter` 时传 `expectedBodySha256`、`expectedRevision` 和稳定 requestId。
 - 修订后若完整性报告出现 stale state/memory/ledger binding，必须按新 Hash 重建对应派生记录与 Closure。
 
-## 11. 长线控制
+## 12. 长线控制
 
 每 5 个 committed 章节或卷/阶段边界执行 Narrative Fatigue、Arc Audit 与 Outline Drift。发现偏移优先调整未来 3–8 章，不静默改写已提交历史。
 
 逻辑正确不能替代类型体验。最近 5 章滚动检查 `genreProfile`；禁止为了过 Gate 机械塞笑点、战斗、反转或感情戏。
 
-## 12. 创作边界
+## 13. 创作边界
 
 允许借鉴类型承诺、宏观结构、节奏、冲突机制和统计特征；禁止复用可识别专有名称、原句、标志性场景、独特人物组合和事件因果链，不模仿在世作者的独特文风。
 
-## 13. 完成标准
+## 14. 完成标准
 
 只有同时满足以下条件才可报告该章完成：
 

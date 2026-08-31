@@ -36,10 +36,10 @@ export FAKE_OPENCLAW_LOG="${TEST_ROOT}/openclaw.log"
 bash "${REPO_ROOT}/install.sh"
 
 test -f "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
-grep -q 'V5.3.2' "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
+grep -q 'V5.4.0' "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-author/memory/private.md")" = 'private memory'
 find "${OPENCLAW_STATE_DIR}/backups/novel-author-suite" -name AGENTS.md -type f | grep -q .
-grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.5 --force' "${FAKE_OPENCLAW_LOG}"
+grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.6 --force' "${FAKE_OPENCLAW_LOG}"
 grep -q 'minChapterHanChars 2000 --strict-json' "${FAKE_OPENCLAW_LOG}"
 grep -q 'targetChapterHanChars 2600 --strict-json' "${FAKE_OPENCLAW_LOG}"
 grep -q 'targetChapterHanCharsMax 3200 --strict-json' "${FAKE_OPENCLAW_LOG}"

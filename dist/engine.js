@@ -31,7 +31,7 @@ import {
   writeJson
 } from "./utils.js";
 
-export const ENGINE_VERSION = "0.4.5";
+export const ENGINE_VERSION = "0.4.6";
 export const ENGINE_SCHEMA_VERSION = 2;
 
 function delay(ms) {
@@ -2002,7 +2002,13 @@ export class NovelEngine {
     });
   }
 
-  async prepareChapter(projectId) {
+  async prepareChapter(projectId, { profile = "compact", role = "writer" } = {}) {
+    if (!new Set(["compact", "full"]).has(profile)) {
+      throw codedError("INVALID_PREPARE_PROFILE", "profile must be compact or full.", { profile });
+    }
+    if (!new Set(["writer", "continuity-auditor", "reader-editor"]).has(role)) {
+      throw codedError("INVALID_PREPARE_ROLE", "role must be writer, continuity-auditor or reader-editor.", { role });
+    }
     const projectDir = await this.requireProject(projectId);
     const { project, state, projectConfig, recoveredTransactions } = await this.recoverProjectForRead(projectDir);
     const chapter = state.nextChapter;
@@ -2061,6 +2067,36 @@ export class NovelEngine {
       auditRequired: projectConfig.quality.requireChapterAudit,
       qualityGateRequired: projectConfig.quality.requireQualityGate
     };
+    const compactSections = {
+      writer: [
+        `# 《${project.title}》第${chapter}章 Writer 精简资料包`,
+        "\n## 本章篇幅与类型规格\n", JSON.stringify({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, null, 2),
+        "\n## 本章大纲\n", context.chapterOutline,
+        "\n## 创作发动机与写作规则\n", context.storyEngine, context.writingRules,
+        "\n## 世界硬规则与当前人物\n", context.worldRules, context.characters,
+        "\n## 上一章末尾\n", context.previousChapter,
+        "\n## 最近摘要与当前状态\n", JSON.stringify({ recent, dynamicState }, null, 2),
+        "\n## 本章相关记忆与长线任务\n", JSON.stringify({ memory: context.memory, causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, null, 2),
+        "\n## Writer 随稿审计契约\n", JSON.stringify(context.auditContract, null, 2)
+      ],
+      "continuity-auditor": [
+        `# 《${project.title}》第${chapter}章 Continuity Auditor 精简资料包`,
+        "\n## 本章大纲与上一章末尾\n", context.chapterOutline, context.previousChapter,
+        "\n## 世界硬规则与当前状态\n", context.worldRules, JSON.stringify(dynamicState, null, 2),
+        "\n## 最近连续性变化\n", JSON.stringify(recent, null, 2),
+        "\n## 因果、伏笔、承诺、关系与对手压力\n", JSON.stringify({ causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, null, 2)
+      ],
+      "reader-editor": [
+        `# 《${project.title}》第${chapter}章 Reader Editor 精简资料包`,
+        "\n## 本章类型体验与篇幅规格\n", JSON.stringify({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, null, 2),
+        "\n## 本章大纲\n", context.chapterOutline,
+        "\n## 创作核心与写作规则\n", context.creativeBrief, context.storyEngine, context.writingRules,
+        "\n## 最近章节节奏指纹\n", JSON.stringify(context.recentSignatures, null, 2)
+      ]
+    };
+    if (profile === "compact") {
+      return { ready: true, chapter, profile, role, packet: compactSections[role].join("\n") };
+    }
     const packet = [
       `# 《${project.title}》第${chapter}章写作资料包`,
       "\n## 项目级写作规格\n", JSON.stringify(projectConfig, null, 2),
@@ -2081,7 +2117,7 @@ export class NovelEngine {
       "\n## Promise、关系与对手压力\n", JSON.stringify({ promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, null, 2),
       "\n## 提交前逻辑与质量审计契约\n", JSON.stringify(context.auditContract, null, 2)
     ].join("\n");
-    return { ready: true, chapter, packet, context };
+    return { ready: true, chapter, profile, role, packet, context };
   }
 
   async buildForeshadowingLedgerAfterChanges(projectDir, chapter, bodySha256, changes, timestamp) {
