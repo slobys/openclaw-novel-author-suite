@@ -20,7 +20,7 @@
 只需执行一条总入口命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.2/setup.sh | bash
 ```
 
 终端会显示：
@@ -47,16 +47,16 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 
 ```bash
 # 只安装小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | bash -s -- 1
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.2/setup.sh | bash -s -- 1
 
 # 只安装小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | bash -s -- 2
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.2/setup.sh | bash -s -- 2
 
 # 无交互确认：安全卸载小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.2/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
 
 # 无交互确认：安全卸载小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.1/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.2/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
 ```
 
 ## 系统逻辑结构
