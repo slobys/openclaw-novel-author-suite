@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.1",
+  "asset_id": "SC001-ST01-F01-v001",
+  "asset_name": "",
+  "task": "",
+  "purpose": "continuous scene asset / AI drama storyboard",
+  "world_relationships": "",
+  "camera": {
+    "position": "",
+    "direction": "",
+    "height": "",
+    "shot_fov": "",
+    "lens_perspective": "",
+    "action_axis_side": "not applicable"
+  },
+  "visibility": {
+    "must_visible": [],
+    "may_occlude": [],
+    "shared_with_previous": []
+  },
+  "references": [
+    {
+      "id": "R1",
+      "asset_id": "",
+      "upload_requirement": "must",
+      "role": "",
+      "do_not_copy": ""
+    }
+  ],
+  "moving_subject_transition": "无移动主体；保持环境空镜。",
+  "targeted_restrictions": [],
+  "zone_context": {
+    "current_level": "",
+    "current_zone": "",
+    "source_zone": "",
+    "destination_zone": "",
+    "active_connector": "",
+    "legal_topology_path": [],
+    "camera_side_of_connector": "",
+    "reference_coverage": "GREEN|YELLOW|RED"
+  },
+  "transition_continuity": {
+    "enabled": false,
+    "transition_id": "",
+    "phase": "approach|threshold|reveal|landing",
+    "previous_end_state": "",
+    "current_start_state": "",
+    "current_end_state": "",
+    "portal_or_stair_identity": "",
+    "must_remain_visible": []
+  }
+}

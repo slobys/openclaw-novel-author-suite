@@ -11,6 +11,7 @@ SKILL_NAMES=(
   deepwhite-n8n-asset-dispatcher
   deepwhite-n8n-video-dispatcher
   deepwhite-scene-asset-planner
+  deepwhite-scene-pack-builder
   deepwhite-screenwriting-v1
   deepwhite-shot-transition-builder-zh
   deepwhite-shotlist-builder-zh-user
@@ -30,4 +31,3 @@ done
 printf '[drama-pipeline-suite] Skills moved to %s\n' "${backup_dir}"
 printf '[drama-pipeline-suite] Agent workspaces, projects, memory, output and sessions were preserved.\n'
 printf '[drama-pipeline-suite] Remove the two Agent roster entries manually only if you no longer need them.\n'
-

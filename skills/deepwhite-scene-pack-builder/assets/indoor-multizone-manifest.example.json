@@ -1,0 +1,706 @@
+{
+  "schema_version": "2.5",
+  "scene_id": "SC001",
+  "scene_name": "现代高端别墅室内示例",
+  "scene_mode": "INTERIOR_MULTI_LEVEL",
+  "status": "draft",
+  "revisions": {
+    "geometry": 1,
+    "style": 1,
+    "camera": 1,
+    "subject": 1,
+    "prompt": 1
+  },
+  "brief": {
+    "subject_world": "",
+    "scene_type": "",
+    "aspect_ratio": "16:9",
+    "purpose": "AI drama / video storyboard",
+    "target_model": "generic-multimodal-image-generator",
+    "user_constraints": [],
+    "inferred_defaults": [],
+    "output_mode": "PORTABLE_HARD_LOCK",
+    "required_prompt_blocks": [
+      "PORTABLE HARD LOCK BANNER",
+      "STYLE LOCK",
+      "SCENE DNA",
+      "SPATIAL LOCK",
+      "CONTINUITY LOCK"
+    ]
+  },
+  "style_lock": {
+    "style_name": "",
+    "medium": "",
+    "realism": "",
+    "materials": [],
+    "color_logic": "",
+    "world_constraints": [],
+    "style_exclusions": []
+  },
+  "world_frame": {
+    "origin": "RM01客厅中心地面",
+    "x_axis": "east",
+    "y_axis": "north",
+    "z_axis": "up",
+    "unit": "m"
+  },
+  "environment_lock": {
+    "time": "",
+    "season": "",
+    "weather": "",
+    "visibility": "",
+    "wind": "",
+    "sun": {
+      "azimuth_world_deg": 135,
+      "elevation_deg": 32
+    },
+    "ground_state": ""
+  },
+  "building": {
+    "id": "BLD01",
+    "name": "现代高端别墅",
+    "primary_zone": "RM01",
+    "exterior_zone": "",
+    "notes": []
+  },
+  "levels": [
+    {
+      "id": "LV01",
+      "index": 1,
+      "name": "一层",
+      "elevation_m": 0.0,
+      "clear_height_m": 3.6
+    },
+    {
+      "id": "LV02",
+      "index": 2,
+      "name": "二层",
+      "elevation_m": 3.9,
+      "clear_height_m": 3.2
+    }
+  ],
+  "zones": [
+    {
+      "id": "RM01",
+      "level_id": "LV01",
+      "name": "客厅",
+      "kind": "living-room",
+      "origin_m": [
+        0,
+        0,
+        0
+      ],
+      "dimensions_m": [
+        8.0,
+        6.5,
+        3.6
+      ],
+      "orientation_deg": 0,
+      "anchor_ids": [
+        "A",
+        "B"
+      ],
+      "fingerprints": [
+        "电视墙右端深古铜格栅",
+        "沙发左后方弧形落地灯"
+      ]
+    },
+    {
+      "id": "RM02",
+      "level_id": "LV01",
+      "name": "餐厅",
+      "kind": "dining-room",
+      "origin_m": [
+        -6.0,
+        0,
+        0
+      ],
+      "dimensions_m": [
+        5.0,
+        4.8,
+        3.6
+      ],
+      "orientation_deg": 0,
+      "anchor_ids": [
+        "C"
+      ],
+      "fingerprints": [
+        "岛台南端圆角",
+        "西墙窄幅竖窗"
+      ]
+    },
+    {
+      "id": "RM03",
+      "level_id": "LV01",
+      "name": "走廊",
+      "kind": "corridor",
+      "origin_m": [
+        0,
+        7.0,
+        0
+      ],
+      "dimensions_m": [
+        2.0,
+        6.0,
+        3.2
+      ],
+      "orientation_deg": 0,
+      "anchor_ids": [
+        "D"
+      ],
+      "fingerprints": [
+        "东墙连续三块木饰面",
+        "北端线性壁灯"
+      ]
+    },
+    {
+      "id": "RM04",
+      "level_id": "LV02",
+      "name": "二楼平台",
+      "kind": "landing",
+      "origin_m": [
+        0,
+        9.0,
+        3.9
+      ],
+      "dimensions_m": [
+        3.0,
+        3.0,
+        3.2
+      ],
+      "orientation_deg": 0,
+      "anchor_ids": [
+        "E"
+      ],
+      "fingerprints": [
+        "西侧玻璃护栏缺口",
+        "北墙方形壁龛"
+      ]
+    },
+    {
+      "id": "RM05",
+      "level_id": "LV02",
+      "name": "主卧",
+      "kind": "bedroom",
+      "origin_m": [
+        4.5,
+        9.0,
+        3.9
+      ],
+      "dimensions_m": [
+        6.0,
+        5.5,
+        3.2
+      ],
+      "orientation_deg": 0,
+      "anchor_ids": [
+        "F"
+      ],
+      "fingerprints": [
+        "床头墙左端竖向木格栅",
+        "东南角弧形休闲椅"
+      ]
+    }
+  ],
+  "connectors": [
+    {
+      "id": "PT01",
+      "kind": "OPENING",
+      "from_zone": "RM01",
+      "to_zone": "RM02",
+      "position_m": [
+        -3.8,
+        0,
+        0
+      ],
+      "orientation_deg": 90,
+      "dimensions_m": [
+        2.8,
+        0.3,
+        2.7
+      ],
+      "source_wall": "RM01西墙",
+      "destination_wall": "RM02东墙",
+      "state": "open",
+      "passable_by": [
+        "person"
+      ],
+      "fingerprints": [
+        "门洞北侧窄铜条",
+        "南侧收口宽于北侧"
+      ]
+    },
+    {
+      "id": "PT02",
+      "kind": "OPENING",
+      "from_zone": "RM01",
+      "to_zone": "RM03",
+      "position_m": [
+        0,
+        3.2,
+        0
+      ],
+      "orientation_deg": 0,
+      "dimensions_m": [
+        1.8,
+        0.3,
+        2.5
+      ],
+      "source_wall": "RM01北墙",
+      "destination_wall": "RM03南端",
+      "state": "open",
+      "passable_by": [
+        "person"
+      ],
+      "fingerprints": [
+        "右上角嵌一盏小射灯",
+        "左门套木纹纵向"
+      ]
+    },
+    {
+      "id": "STA01",
+      "kind": "STAIR",
+      "from_zone": "RM03",
+      "to_zone": "RM04",
+      "position_m": [
+        0,
+        9.0,
+        0
+      ],
+      "orientation_deg": 0,
+      "dimensions_m": [
+        2.2,
+        5.5,
+        3.9
+      ],
+      "source_wall": "RM03北端",
+      "destination_wall": "RM04南端",
+      "state": "open",
+      "passable_by": [
+        "person"
+      ],
+      "fingerprints": [
+        "首跑扶手在东侧",
+        "中间平台西墙长条窗"
+      ],
+      "vertical": {
+        "lower_level": "LV01",
+        "upper_level": "LV02",
+        "configuration": "U-shaped-two-flight",
+        "ascent_direction": "north then south",
+        "flight_count": 2,
+        "landing_count": 1,
+        "railing_side": "inner/east then inner/west"
+      }
+    },
+    {
+      "id": "PT03",
+      "kind": "DOOR",
+      "from_zone": "RM04",
+      "to_zone": "RM05",
+      "position_m": [
+        2.0,
+        9.0,
+        3.9
+      ],
+      "orientation_deg": 90,
+      "dimensions_m": [
+        1.0,
+        0.18,
+        2.4
+      ],
+      "source_wall": "RM04东墙",
+      "destination_wall": "RM05西墙",
+      "state": "open",
+      "passable_by": [
+        "person"
+      ],
+      "fingerprints": [
+        "黑色长条把手偏外侧",
+        "门框上方无压线"
+      ]
+    }
+  ],
+  "transition_routes": [
+    {
+      "id": "RT01",
+      "name": "客厅到餐厅",
+      "zone_sequence": [
+        "RM01",
+        "RM02"
+      ],
+      "connector_sequence": [
+        "PT01"
+      ]
+    },
+    {
+      "id": "RT02",
+      "name": "客厅到主卧",
+      "zone_sequence": [
+        "RM01",
+        "RM03",
+        "RM04",
+        "RM05"
+      ],
+      "connector_sequence": [
+        "PT02",
+        "STA01",
+        "PT03"
+      ]
+    }
+  ],
+  "landmarks": [
+    {
+      "id": "A",
+      "name": "客厅电视墙",
+      "anchor_type": "identity",
+      "position_m": [
+        0,
+        3.0,
+        0
+      ],
+      "orientation_deg": 180,
+      "dimensions_m": [
+        5.2,
+        0.35,
+        3.2
+      ],
+      "appearance": "浅灰洞石电视墙与右端深古铜格栅",
+      "materials": [
+        "洞石",
+        "深古铜"
+      ],
+      "fingerprints": [
+        "右端竖向深古铜格栅",
+        "左下角悬浮黑色壁炉台"
+      ],
+      "visible_in": [
+        "M01",
+        "TR01A",
+        "TR01B"
+      ]
+    },
+    {
+      "id": "B",
+      "name": "客厅主沙发",
+      "anchor_type": "scale",
+      "position_m": [
+        0,
+        -0.5,
+        0
+      ],
+      "orientation_deg": 0,
+      "dimensions_m": [
+        3.8,
+        1.1,
+        0.85
+      ],
+      "appearance": "米白低靠背模块沙发",
+      "materials": [
+        "米白亚麻"
+      ],
+      "fingerprints": [
+        "左侧贵妃位略长",
+        "右后角一只深咖皮革靠枕"
+      ],
+      "visible_in": [
+        "M01",
+        "TR01A"
+      ]
+    },
+    {
+      "id": "C",
+      "name": "餐厅岛台",
+      "anchor_type": "identity",
+      "position_m": [
+        -6.0,
+        0,
+        0
+      ],
+      "orientation_deg": 0,
+      "dimensions_m": [
+        2.6,
+        1.0,
+        0.92
+      ],
+      "appearance": "浅灰石材圆角岛台",
+      "materials": [
+        "浅灰石材",
+        "烟熏木"
+      ],
+      "fingerprints": [
+        "南端为连续圆角",
+        "东侧下方有一段内凹木饰面"
+      ],
+      "visible_in": [
+        "M02",
+        "TR01B"
+      ]
+    },
+    {
+      "id": "D",
+      "name": "走廊木饰面墙",
+      "anchor_type": "identity",
+      "position_m": [
+        0,
+        7.0,
+        0
+      ],
+      "orientation_deg": 90,
+      "dimensions_m": [
+        0.25,
+        5.4,
+        3.1
+      ],
+      "appearance": "连续烟熏木饰面走廊墙",
+      "materials": [
+        "烟熏木"
+      ],
+      "fingerprints": [
+        "连续三块竖向分缝",
+        "北端线性壁灯偏右"
+      ],
+      "visible_in": [
+        "M01",
+        "M03"
+      ]
+    },
+    {
+      "id": "E",
+      "name": "二楼平台玻璃护栏",
+      "anchor_type": "topology",
+      "position_m": [
+        0,
+        9.0,
+        3.9
+      ],
+      "orientation_deg": 90,
+      "dimensions_m": [
+        2.8,
+        0.12,
+        1.1
+      ],
+      "appearance": "低反射玻璃与哑光黑扶手",
+      "materials": [
+        "低反射玻璃",
+        "哑光黑金属"
+      ],
+      "fingerprints": [
+        "西侧留一个窄缺口",
+        "北端扶手收口为斜切"
+      ],
+      "visible_in": [
+        "M03"
+      ]
+    },
+    {
+      "id": "F",
+      "name": "主卧床头墙",
+      "anchor_type": "identity",
+      "position_m": [
+        7.0,
+        9.0,
+        3.9
+      ],
+      "orientation_deg": 270,
+      "dimensions_m": [
+        4.5,
+        0.25,
+        3.0
+      ],
+      "appearance": "暖灰软包与浅烟熏木格栅床头墙",
+      "materials": [
+        "暖灰织物",
+        "浅烟熏木"
+      ],
+      "fingerprints": [
+        "左端竖向木格栅",
+        "右上角嵌一条细线灯"
+      ],
+      "visible_in": [
+        "M03"
+      ]
+    }
+  ],
+  "topology": [
+    {
+      "from": "",
+      "to": "",
+      "kind": "",
+      "width_m": 0,
+      "direction": "",
+      "passable_by": []
+    }
+  ],
+  "moving_subjects": [],
+  "movement_route": {
+    "enabled": false,
+    "subject_id": "",
+    "start": "",
+    "waypoints": [],
+    "end": "",
+    "line_of_action": "",
+    "default_screen_direction": ""
+  },
+  "cameras": [
+    {
+      "id": "V01",
+      "position_m": [
+        0,
+        -4.5,
+        1.6
+      ],
+      "look_at": "A",
+      "yaw_deg": 0,
+      "pitch_deg": 0,
+      "fov_deg": 54,
+      "shot_size": "wide",
+      "visible_landmarks": [
+        "A",
+        "B",
+        "C"
+      ],
+      "shared_with_previous": [],
+      "continuity_purpose": "建立客厅与餐厅门洞关系",
+      "screen_direction": "northwest",
+      "occluded_landmarks": [
+        "E",
+        "F"
+      ],
+      "action_axis_side": "south"
+    }
+  ],
+  "assets": [
+    {
+      "id": "F01",
+      "type": "floorplan",
+      "name": "一层平面图",
+      "status": "pending",
+      "depends_on": [],
+      "references": []
+    },
+    {
+      "id": "F02",
+      "type": "floorplan",
+      "name": "二层平面图",
+      "status": "pending",
+      "depends_on": [],
+      "references": []
+    },
+    {
+      "id": "C01",
+      "type": "connectivity",
+      "name": "房间连接图",
+      "status": "blocked",
+      "depends_on": [
+        "F01",
+        "F02"
+      ],
+      "references": [
+        "F01",
+        "F02"
+      ]
+    },
+    {
+      "id": "S01",
+      "type": "section",
+      "name": "楼层与楼梯剖面",
+      "status": "blocked",
+      "depends_on": [
+        "C01"
+      ],
+      "references": [
+        "F01",
+        "F02",
+        "C01"
+      ]
+    },
+    {
+      "id": "M01",
+      "type": "master",
+      "name": "客厅母版",
+      "status": "blocked",
+      "depends_on": [
+        "F01",
+        "C01"
+      ],
+      "references": [
+        "F01",
+        "C01"
+      ]
+    },
+    {
+      "id": "M02",
+      "type": "master",
+      "name": "餐厅母版",
+      "status": "blocked",
+      "depends_on": [
+        "F01",
+        "C01"
+      ],
+      "references": [
+        "F01",
+        "C01",
+        "M01"
+      ]
+    },
+    {
+      "id": "M03",
+      "type": "master",
+      "name": "二楼平台与主卧入口母版",
+      "status": "blocked",
+      "depends_on": [
+        "F02",
+        "C01",
+        "S01"
+      ],
+      "references": [
+        "F02",
+        "C01",
+        "S01"
+      ]
+    },
+    {
+      "id": "TR01A",
+      "type": "transition",
+      "name": "客厅到餐厅接近镜头",
+      "status": "blocked",
+      "depends_on": [
+        "M01",
+        "M02"
+      ],
+      "references": [
+        "F01",
+        "C01",
+        "M01",
+        "M02"
+      ]
+    }
+  ],
+  "current_asset": "F01",
+  "accepted_assets": [],
+  "audit_history": [],
+  "notes": [],
+  "complexity": "INTERIOR_MULTI_LEVEL",
+  "reference_coverage": {
+    "default_grade": "RED",
+    "notes": []
+  },
+  "canonical_prompt_lock": {
+    "lock_id": "",
+    "sealed": false,
+    "style_lock_text": "高质量3D半写实现代中国高端住宅室内，真实可建造尺度，细腻PBR材质，电影级自然光和克制室内照明，风格统一。",
+    "scene_dna_lock_text": "SC001为同一栋现代高端别墅室内；固定包含LV01客厅、餐厅、走廊与LV02平台、主卧，以及同一组固定家具、门窗和楼梯身份。",
+    "spatial_lock_text": "LV01中RM01客厅经PT01向西连接RM02餐厅，经PT02向北连接RM03走廊；RM03经STA01折返楼梯上行至LV02的RM04平台；RM04经PT03向东连接RM05主卧。所有连接器位置、尺寸、方向和楼层高度固定。",
+    "continuity_lock_text": "所有资产属于同一栋固定建筑；不得移动门洞、楼梯、墙体、窗户或家具锚点，不得镜像户型或改变楼层连接，只允许合法机位、自然遮挡和主体沿既定路线移动。",
+    "compiler_schema": "DW-PHL-1"
+  },
+  "scale_lock": {
+    "human_height_m": 1.7,
+    "main_portal_height_m": 2.7,
+    "main_path_width_m": 1.2,
+    "notes": [
+      "客厅净高3.6米，挑空区另行在B01/S01锁定"
+    ]
+  }
+}

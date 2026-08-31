@@ -26,8 +26,8 @@ SECRET_RE = re.compile(r"(?i)(api[_-]?key|webhook[_-]?secret|authorization)\s*[:
 def main() -> int:
     errors: list[str] = []
     skill_dirs = sorted(path for path in (ROOT / "skills").iterdir() if path.is_dir())
-    if len(skill_dirs) != 9:
-        errors.append(f"expected 9 public skills, found {len(skill_dirs)}")
+    if len(skill_dirs) != 10:
+        errors.append(f"expected 10 public skills, found {len(skill_dirs)}")
     for skill in skill_dirs:
         if not (skill / "SKILL.md").is_file():
             errors.append(f"missing SKILL.md: {skill.relative_to(ROOT)}")

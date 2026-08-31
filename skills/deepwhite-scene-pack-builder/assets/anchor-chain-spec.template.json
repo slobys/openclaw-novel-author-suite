@@ -1,0 +1,57 @@
+{
+  "schema_version": "3.2.0",
+  "mode": "character_anchor_chain",
+  "anchors": {
+    "Anchor-A": {
+      "role": "identity_master",
+      "typical_source": "front_full_body",
+      "required_for": [
+        "most derived views"
+      ]
+    },
+    "Anchor-B": {
+      "role": "face_master",
+      "typical_source": "head_closeup",
+      "required_for": [
+        "closeup",
+        "expression",
+        "half_body"
+      ]
+    },
+    "Anchor-C": {
+      "role": "adjacent_view_bridge",
+      "typical_source": "approved_neighbour_view",
+      "required_for": [
+        "large angle transitions"
+      ]
+    },
+    "Anchor-D": {
+      "role": "action_prop_master",
+      "typical_source": "action_or_prop_view",
+      "required_for": [
+        "action",
+        "held prop"
+      ]
+    }
+  },
+  "coverage_logic": {
+    "GREEN": [
+      "Anchor-A+Anchor-B for closeups",
+      "Anchor-A+Anchor-C for adjacent side views",
+      "C01 sheet available"
+    ],
+    "YELLOW": [
+      "Anchor-A only for side/back view",
+      "no Anchor-B for closeups",
+      "no Anchor-D for action"
+    ],
+    "RED": [
+      "no valid anchors and no character definition"
+    ]
+  },
+  "commands": [
+    "用当前上传图片建立角色锚点",
+    "以当前上传的人物图为主参考，输出左侧面全身",
+    "列出当前角色锚点"
+  ]
+}

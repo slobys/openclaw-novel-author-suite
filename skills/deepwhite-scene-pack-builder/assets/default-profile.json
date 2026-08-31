@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.9.0",
+  "profile_id": "ZERO_CONFIG_DEFAULT",
+  "prompt_contract": "PORTABLE_HARD_LOCK",
+  "output_language": "zh-CN",
+  "include_english_prompt": false,
+  "default_aspect_ratio": "16:9",
+  "default_output_mode": "progressive",
+  "portable_self_contained": true,
+  "include_four_locks_in_every_asset": true,
+  "semantic_asset_ids": true,
+  "echo_default_commands": false,
+  "broad_scene_defaults": {
+    "现代中国室内": {
+      "scene_type": "现代中国高品质住宅一层公共空间",
+      "style": "高质量3D半写实现代室内电影感",
+      "zones": [
+        "玄关",
+        "客厅",
+        "餐厅",
+        "厨房",
+        "走廊",
+        "楼梯口"
+      ]
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schema_version": "3.2.0",
+  "zero_config_defaults": {
+    "output_language": "zh-CN",
+    "workflow_mode": "STEP_BY_STEP",
+    "prompt_policy": "PORTABLE_HARD_LOCK",
+    "output_scope": "CURRENT_ASSET_ONLY",
+    "scene_default_aspect_ratio": "16:9",
+    "subject_default_aspect_ratio": "9:16"
+  },
+  "mode_first_asset": {
+    "scene_exterior": "L01",
+    "scene_interior": "F01",
+    "character": "C01",
+    "animal": "A01",
+    "creature": "CR01",
+    "prop": "P01"
+  },
+  "character_direct_output": {
+    "enabled": true,
+    "asset_code": "CP",
+    "default_aspect_ratio": "9:16",
+    "view_list_command": "列出当前人物可调用视图"
+  },
+  "character_anchor_chain": {
+    "enabled": true,
+    "anchor_types": [
+      "Anchor-A",
+      "Anchor-B",
+      "Anchor-C",
+      "Anchor-D"
+    ],
+    "default_registration": "Anchor-A",
+    "coverage_levels": [
+      "GREEN",
+      "YELLOW",
+      "RED"
+    ],
+    "list_command": "列出当前角色锚点"
+  }
+}

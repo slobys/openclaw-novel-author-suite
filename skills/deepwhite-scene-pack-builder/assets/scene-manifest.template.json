@@ -1,0 +1,105 @@
+{
+  "schema_version": "3.2.0",
+  "scene_id": "SC001",
+  "scene_name": "",
+  "scene_mode": "SIMPLE_FLAT",
+  "status": "draft",
+  "revisions": {
+    "geometry": 1,
+    "style": 1,
+    "camera": 1,
+    "subject": 1,
+    "prompt": 1
+  },
+  "brief": {
+    "subject_world": "",
+    "scene_type": "",
+    "aspect_ratio": "16:9",
+    "purpose": "AI drama / video storyboard",
+    "target_model": "generic-multimodal-image-generator",
+    "user_constraints": [],
+    "inferred_defaults": [],
+    "output_mode": "PORTABLE_HARD_LOCK",
+    "required_prompt_blocks": [
+      "PORTABLE HARD LOCK BANNER",
+      "STYLE LOCK",
+      "SCENE DNA",
+      "SPATIAL LOCK",
+      "CONTINUITY LOCK"
+    ]
+  },
+  "style_lock": {
+    "style_name": "",
+    "medium": "",
+    "realism": "",
+    "materials": [],
+    "color_logic": "",
+    "world_constraints": [],
+    "style_exclusions": []
+  },
+  "canonical_prompt_lock": {
+    "lock_id": "",
+    "sealed": false,
+    "style_lock_text": "",
+    "scene_dna_lock_text": "",
+    "spatial_lock_text": "",
+    "continuity_lock_text": "",
+    "compiler_schema": "DW-PHL-1"
+  },
+  "world_frame": {
+    "origin": "待定义的主入口中心地面",
+    "x_axis": "east",
+    "y_axis": "north",
+    "z_axis": "up",
+    "unit": "m"
+  },
+  "environment_lock": {
+    "time": "",
+    "season": "",
+    "weather": "",
+    "visibility": "",
+    "wind": "",
+    "sun": {
+      "azimuth_world_deg": 135,
+      "elevation_deg": 32
+    },
+    "ground_state": ""
+  },
+  "landmarks": [],
+  "cameras": [],
+  "assets": [
+    {
+      "id": "F01",
+      "order": 1,
+      "series_id": "SC001-ST01-F01",
+      "code": "F01",
+      "version": 1,
+      "asset_id": "SC001-ST01-F01-v001",
+      "type": "floorplan",
+      "name": "总平面与空间权威",
+      "title": "总平面与空间权威",
+      "status": "pending",
+      "depends_on": [],
+      "references": [],
+      "dependencies": [],
+      "reference_inputs": [],
+      "prompt_status": "NOT_STARTED",
+      "image_status": "NOT_GENERATED",
+      "review_status": "UNREVIEWED",
+      "failure_reason": null,
+      "current": true
+    }
+  ],
+  "current_asset": "F01",
+  "current_asset_series_id": "SC001-ST01-F01",
+  "accepted_assets": [],
+  "audit_history": [],
+  "notes": [],
+  "default_profile": "ZERO_CONFIG_DEFAULT",
+  "prompt_contract": "PORTABLE_HARD_LOCK",
+  "output_language": "zh-CN",
+  "include_english_prompt": false,
+  "output_mode": "progressive",
+  "portable_self_contained": true,
+  "include_four_locks_in_every_asset": true
+}

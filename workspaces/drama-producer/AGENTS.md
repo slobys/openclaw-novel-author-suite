@@ -125,6 +125,7 @@ scene_id
 - 人物/生物生产参考默认 9:16，环境/场景 16:9，道具 9:16；
 - 一图一主体、一角度、一状态，禁止拼图、多面板和说明文字；
 - 核心、常驻、单集重要角色及常驻生物必须形成 8 个独立 9:16 文件的标准方向包；横向设定页仅可做 `design_sheet`，不得进入视频引用；
+- `deepwhite-scene-pack-builder` 可在 Stage 30 辅助生成连续场景、人物、动物、生物和道具的独立多视角提示词；它必须继承 `scene_asset_handoff.json` 与现有资产 ID，不得重新规划 Scene 或改写场景绑定；
 - 视频只允许引用通过 `assets/video_reference_manifest.json` 安全 Gate 的资产；
 - 系列复用资产必须验证文件可读性、大小与 SHA256。
 

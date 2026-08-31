@@ -1,0 +1,61 @@
+{
+  "schema_version": "3.1.0",
+  "mode": "character_direct_output",
+  "default_aspect_ratio": "9:16",
+  "asset_code": "CP",
+  "view_angles": [
+    "FRONT",
+    "LEFT_PROFILE",
+    "RIGHT_PROFILE",
+    "BACK",
+    "LEFT_FRONT_45",
+    "RIGHT_FRONT_45",
+    "LEFT_BACK_45",
+    "RIGHT_BACK_45"
+  ],
+  "framings": [
+    "FULL_BODY",
+    "THREE_QUARTER_BODY",
+    "KNEE_UP",
+    "WAIST_UP",
+    "BUST",
+    "HEAD_SHOULDERS",
+    "HEAD_CLOSEUP",
+    "FACE_CLOSEUP"
+  ],
+  "focus_parts": [
+    "WHOLE_BODY",
+    "HEAD",
+    "FACE",
+    "HANDS",
+    "FEET",
+    "HAT",
+    "COSTUME",
+    "WAIST_PROP"
+  ],
+  "defaults": {
+    "正面": {
+      "view_angle": "FRONT",
+      "framing": "FULL_BODY",
+      "expression": "NEUTRAL",
+      "pose": "NEUTRAL_STANDING"
+    },
+    "侧面": {
+      "view_angle": "LEFT_PROFILE",
+      "framing": "FULL_BODY",
+      "expression": "NEUTRAL",
+      "pose": "NEUTRAL_STANDING"
+    },
+    "背面": {
+      "view_angle": "BACK",
+      "framing": "FULL_BODY",
+      "pose": "NEUTRAL_STANDING"
+    },
+    "头部特写": {
+      "view_angle": "FRONT",
+      "framing": "HEAD_SHOULDERS",
+      "focus_part": "HEAD",
+      "expression": "NEUTRAL"
+    }
+  }
+}

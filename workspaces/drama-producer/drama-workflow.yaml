@@ -389,6 +389,7 @@ workflow:
   stage_30_image_prompt:
     name: Strict Planned-Asset Prompt Compilation
     skill: deepwhite-image-prompt-builder
+    supporting_skill: deepwhite-scene-pack-builder
     mode: STRICT_ASSET_PLAN_MODE
     inputs:
     - assets/location_asset_requirements.json

@@ -1,6 +1,6 @@
 # OpenClaw Novel-to-Drama Pipeline
 
-这是 OpenClaw 的“小说转 AI 漫剧/短剧”全自动生产套件。它把两个互相关联的 Agent 和 9 个 DeepWhite Skills 一次安装好：
+这是 OpenClaw 的“小说转 AI 漫剧/短剧”全自动生产套件。它把两个互相关联的 Agent 和 10 个 DeepWhite Skills 一次安装好：
 
 - `novel-producer`：把整本小说整理成可靠的系列计划和逐集生产简报；
 - `drama-producer`：接过一集简报，完成剧本、场景资产、图片、分镜、视频和成片闭环。
@@ -59,6 +59,7 @@ flowchart TB
 | Continuity | 场记 | 记录人物位置、服装、伤痕、道具、时间、天气和移动路线，防止下一镜无故重置。 |
 | Scene Asset Planner | 场景美术统筹 | 先决定每个 Scene 具体发生在哪里、复用哪张旧场景、需要新画哪些角度；避免整集只用一个背景。 |
 | Image Prompt Builder | 图片提示词设计师 | 严格按照资产计划写图像提示词；重要角色/资产按独立 9:16 单图输出多个角度，不允许一张拼图塞所有视角。 |
+| Scene Pack Builder | 连续资产摄影棚 | 根据已经确定的场景和资产 ID，连续产出场景、人物、动物、生物或道具的单张多视角提示词；负责“同一资产换角度”，不负责改剧情或重新绑定场景。 |
 | Asset Dispatcher | 生图任务派发员 | 校验任务和重试预算后提交 n8n；HTTP 2xx 只记为“入口收到”，不冒充生成完成。 |
 | Shotlist Builder | 分镜师 | 使用实际审核通过的图片做分镜，并把每个镜头绑定到正确 Scene 和场景资产。 |
 | Transition Builder | 剪辑衔接设计师 | 只在需要时设计动作、视线、声音或首尾帧桥接；不能偷偷改掉场景绑定。 |
@@ -72,13 +73,13 @@ flowchart TB
 适用于 Linux、群晖/QNAP 等 NAS SSH 环境。需要 OpenClaw、Node.js、Python 3、`bash`、`curl` 和 `tar`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.0.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.1.0/install.sh | bash
 ```
 
 安装器会：
 
 1. 安装或更新两个 Agent Workspace；
-2. 安装 9 个 DeepWhite Skills；
+2. 安装 10 个 DeepWhite Skills；
 3. 已存在同名 Agent 时读取真实 roster 并沿用其 Workspace；
 4. 覆盖公共模板前备份旧文件；
 5. 永不覆盖或删除 `projects/`、`memory/`、`output/`、`.learnings/`、会话或 n8n 数据；
@@ -145,6 +146,7 @@ skills/
 ├─ deepwhite-continuity-worldstate-zh
 ├─ deepwhite-scene-asset-planner
 ├─ deepwhite-image-prompt-builder
+├─ deepwhite-scene-pack-builder
 ├─ deepwhite-n8n-asset-dispatcher
 ├─ deepwhite-shotlist-builder-zh-user
 ├─ deepwhite-shot-transition-builder-zh
