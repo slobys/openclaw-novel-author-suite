@@ -1,92 +1,83 @@
-schema_version: '2.0'
-project:
-  name: AI Short Drama Production Pipeline
-  agent: drama-producer
-
-# 这是给 Agent 快速读取的索引，不是第二套流程定义。
-# 阶段、状态、停止条件与 Gate 的唯一权威来源是 drama-workflow.yaml。
-source_of_truth: drama-workflow.yaml
+schema_version: "2.1.0"
 pipeline_profile: scene_bound_auto_v1.2
+authority: mirror_index_only
+must_match: drama-workflow.yaml
+project: {name: AI Short Drama Production Pipeline, agent: drama-producer}
 
-route:
-  - order: 10
-    stage: screenplay
+workflow:
+  stage_10_screenplay:
     skill: deepwhite-screenwriting-v1
-  - order: 20
-    stage: continuity
+    output: [script/episode_script.md, script/scene_index.json]
+  stage_20_world_state:
     skill: deepwhite-continuity-worldstate-zh
-  - order: 25
-    stage: scene_asset_plan
+    invocation: {mode: AUTO_MACHINE_MODE}
+    output: [world/characters.json, world/locations.json, world/props.json, continuity/continuity_handoff.json]
+  stage_25_scene_asset_plan:
     skill: deepwhite-scene-asset-planner
-  - order: 30
-    stage: image_prompt
+    authority: scene_id_to_location_asset_binding
+    output: [assets/scene_asset_plan.json, assets/location_asset_requirements.json, handoffs/scene_asset_handoff.json, gates/scene_asset_coverage_gate.json]
+  stage_30_base_continuity_design:
+    skill: deepwhite-scene-pack-builder
+    invocation: {mode: PIPELINE_BATCH, pass: BASE_ASSET}
+    constraint: preserve_scene_asset_handoff
+  stage_32_base_prompt_packaging:
     skill: deepwhite-image-prompt-builder
-    mode: STRICT_ASSET_PLAN_MODE
-  - order: 35
-    stage: location_prompt_gate
-    action: deterministic_validator
-  - order: 40
-    stage: asset_dispatch
+    invocation: {mode: PACKAGER_ONLY, source_pass: BASE_ASSET}
+  stage_35_base_asset_generation:
     skill: deepwhite-n8n-asset-dispatcher
-  - order: 45
-    stage: asset_ingest_and_review
-    action: callback_and_actual_image_review
-  - order: 50
-    stage: final_shotlist
+    invocation: {mode: CONTINUITY_V2, stage_filter: anchor, wait_for_registry: true}
+    success_requires: all_required_assets_approved
+  stage_40_preliminary_shotlist:
     skill: deepwhite-shotlist-builder-zh-user
-    mode: AUTO_GATE_MODE
-  - order: 55
-    stage: shot_binding_gate
-    action: deterministic_validator
-  - order: 60
-    stage: transition
+    purpose: discover_shot_asset_gaps_without_rebinding_scenes
+  stage_42_shot_asset_gap:
+    skill: deepwhite-scene-pack-builder
+    invocation: {mode: PIPELINE_BATCH, pass: SHOT_ASSET_GAP}
+  stage_44_shot_prompt_packaging:
+    skill: deepwhite-image-prompt-builder
+    invocation: {mode: PACKAGER_ONLY, source_pass: SHOT_ASSET_GAP}
+  stage_46_derived_asset_generation:
+    skill: deepwhite-n8n-asset-dispatcher
+    invocation: {mode: CONTINUITY_V2, stage_filter: [derived, shot], wait_for_registry: true}
+    success_requires: all_required_assets_approved
+  stage_50_final_shotlist:
+    skill: deepwhite-shotlist-builder-zh-user
+    authority: actual_approved_assets_plus_scene_asset_handoff
+  stage_60_transition:
     skill: deepwhite-shot-transition-builder-zh
     optional: true
-  - order: 65
-    stage: video_prompt_readiness
-    action: deterministic_and_semantic_gate
-  - order: 70
-    stage: video_dispatch
+    constraint: must_not_change_scene_or_location_binding
+  stage_70_video_dispatch:
     skill: deepwhite-n8n-video-dispatcher
-  - order: 80
-    stage: video_result
-    action: callback_ingest
-  - order: 90
-    stage: final_composition
-    action: callback_and_file_verification
-  - order: 95
-    stage: pipeline_evidence
-    action: deterministic_validator
-    series_only: true
-  - order: 100
-    stage: series_commit
-    action: series_orchestrator_complete
-    series_only: true
+    success_requires: execution_or_result_evidence
+  stage_90_final_composition: {action: verify_final_video}
+  stage_95_pipeline_evidence: {skill: deepwhite-00-novel-series-orchestrator}
+  stage_100_series_commit: {action: commit_verified_episode}
 
-global_invariants:
-  - 每个 Scene 必须有稳定 scene_id
-  - Scene Asset Handoff 是地点与背景资产绑定的唯一权威来源
-  - generation requirements 必须与图片提示词一一对应
-  - 复用资产不得再次提交 n8n
-  - 最终分镜必须基于实际生成或验证复用的图片
-  - 每个视频 clip 只能属于一个 scene_id 和一个 location_asset_id
-  - Transition 不得改变机器场景绑定
-  - HTTP 2xx 只表示 webhook_accepted_unverified
-  - 同一 payload 重试必须复用原 job_id
-  - 最终 MP4 通过可读性、大小与 SHA256 验证后才是 final_video_ready
-
-human_pause_only_when:
-  - 用户明确要求逐阶段审核
-  - 用户锁定要求存在无法自动消解的冲突
-  - 关键来源或权威资产证据缺失
-  - 自动修订达到上限后仍有 Critical 问题
-  - 跨图材质或风格存在会改变用户选择的实质差异
-  - 对外发布或其他未授权外部动作
-
-resume_rule:
-  read_first:
-    - drama-workflow.yaml
-    - project.json
-    - state/pipeline_state.json
-    - input/production_pipeline_contract.json（系列项目）
-  behavior: 从最后一个已验证检查点继续，禁止根据聊天记录猜测完成状态
+rules:
+  authority_order:
+    - script_scene_index
+    - continuity_world_state
+    - scene_asset_planner_handoff
+    - scene_pack_child_asset_design
+    - image_prompt_packaging
+    - approved_reference_registry
+    - final_shot_bindings
+  hard_invariants:
+    - scene_pack_never_replaces_scene_asset_planner
+    - packager_never_rewrites_hard_locks
+    - one_child_asset_one_image
+    - registry_entries_bind_job_payload_lock_and_file_hash
+    - rejected_or_failed_required_assets_never_count_as_success
+    - http_2xx_never_means_generation_completed
+    - final_video_ready_is_the_only_episode_success_status
+  aspect_ratio_defaults:
+    location: "16:9"
+    scene: "16:9"
+    character: "9:16"
+    animal: "9:16"
+    creature: "9:16"
+    prop: "9:16"
+    storyboard: "16:9"
+    shot: "16:9"
+  human_review_required_only_for: [external_publish, material_change_to_user_locked_story_or_style, unresolved_critical_after_two_revisions]

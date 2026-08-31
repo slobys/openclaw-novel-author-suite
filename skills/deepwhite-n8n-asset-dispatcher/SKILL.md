@@ -108,3 +108,41 @@ project_id：...
 任务清单：dispatch/asset_jobs/....json
 n8n 接收状态：webhook_accepted_unverified / execution_confirmed
 ```
+
+<!-- BEGIN DEEPWHITE_CONTINUITY_DISPATCH_V2 -->
+
+# Continuity Asset Job v2.1（最高优先级）
+
+当任务 `schema_version` 为 `2.x` 或包含 `reference_inputs` 时，必须使用连续资产派发模式。
+
+除旧版必需字段外，保留：
+
+```text
+parent_asset_id
+family_id
+style_id
+asset_code
+generation_stage
+lock_id
+lock_hash
+depends_on
+reference_inputs
+anchor_roles
+```
+
+派发前必须：
+
+1. 校验 project/job/asset ID 和 filename 均为安全 ASCII 值，禁止路径片段；
+2. 校验依赖图无环，外部依赖必须同时出现在 `reference_inputs`；
+3. 确认所有必需参考图声明包含 `approved_only: true`；
+4. 按四锁原文重新计算完整 `sha256:<64hex>`，不得只检查非空；
+5. 运行 `validate-continuity-job.mjs`；发送脚本也会再次执行同一验证；
+6. 使用 `send-continuity-job-to-n8n.mjs` 提交；`--dry-run` 不要求 Webhook 环境变量；
+7. 正式自动生产必须加 `--wait --registry-snapshot=assets/reference_registry.json`；
+8. 只有每个必需资产都为 `approved`，且 `job_id`、`payload_sha256`、`lock_hash`、文件大小和文件 SHA256 全部匹配，才算本阶段完成。
+
+`shared_asset_root` 只能来自 Gateway 的 `OPENCLAW_ASSET_SHARED_ROOT`，禁止由任务 Payload 指定。HTTP 2xx 仍只记录为 `webhook_accepted_unverified`。
+
+不得删除额外连续性字段后降级为 v1 任务。
+
+<!-- END DEEPWHITE_CONTINUITY_DISPATCH_V2 -->

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="1.1.0"
+SUITE_VERSION="1.2.0"
 REPOSITORY="slobys/openclaw-novel-author-suite"
 REF="${DRAMA_SUITE_REF:-drama-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
@@ -163,4 +163,4 @@ fi
 log "Installed Drama Pipeline Suite ${SUITE_VERSION}"
 log "Workspace backup: ${backup_dir}"
 log "Projects, memory, output and sessions were not modified."
-log "Next: configure OPENCLAW_ASSET_ROOT and your n8n webhook URLs, then open novel-producer."
+log "Next: configure OPENCLAW_ASSET_SHARED_ROOT and your n8n webhook URLs, then open novel-producer."

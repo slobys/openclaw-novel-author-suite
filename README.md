@@ -73,7 +73,7 @@ flowchart TB
 适用于 Linux、群晖/QNAP 等 NAS SSH 环境。需要 OpenClaw、Node.js、Python 3、`bash`、`curl` 和 `tar`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.1.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.2.0/install.sh | bash
 ```
 
 安装器会：
@@ -87,12 +87,21 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 
 重复执行同一条命令就是更新，不会重复创建同名 Agent。
 
+## 安全卸载
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.2.0/uninstall.sh | bash
+```
+
+卸载器会把本套件的 10 个 Skills 移入带时间戳的备份目录，不直接永久删除；Agent Workspace、项目、memory、output、会话和 n8n 数据全部保留。确认不再使用后，再按你的 OpenClaw 版本手动删除两个 Agent roster 条目。
+
 ## 安装后必须配置
 
 本套件不会把作者自己的 NAS 路径、Webhook 或密钥公开。请给 OpenClaw Gateway 配置以下环境变量：
 
 ```text
-OPENCLAW_ASSET_ROOT=/你的/n8n/固定结果根目录
+OPENCLAW_ASSET_SHARED_ROOT=/宿主机可读取的共享资产根目录
+N8N_ASSET_ROOT=/data/openclaw-assets
 N8N_ASSET_WEBHOOK_URL=https://你的n8n/webhook/...
 N8N_ASSET_WEBHOOK_SECRET=你的密钥
 N8N_VIDEO_WEBHOOK_URL=https://你的n8n/webhook/...
@@ -103,7 +112,8 @@ systemd 用户服务可通过 `systemctl --user edit openclaw-gateway` 添加：
 
 ```ini
 [Service]
-Environment=OPENCLAW_ASSET_ROOT=/path/to/openclaw-assets
+Environment=OPENCLAW_ASSET_SHARED_ROOT=/path/to/openclaw-assets
+Environment=N8N_ASSET_ROOT=/data/openclaw-assets
 Environment=N8N_ASSET_WEBHOOK_URL=https://n8n.example.com/webhook/assets
 Environment=N8N_ASSET_WEBHOOK_SECRET=replace-me
 Environment=N8N_VIDEO_WEBHOOK_URL=https://n8n.example.com/webhook/video
@@ -139,7 +149,7 @@ openclaw gateway restart --safe
 ```text
 workspaces/
 ├─ novel-producer/       # 系列改编、分集规划和顺序派发
-└─ drama-producer/       # 单集从剧本到最终视频的状态机
+└─ drama-producer/       # 单集从剧本到最终视频的状态机，内含可导入 n8n 工作流
 skills/
 ├─ deepwhite-00-novel-series-orchestrator
 ├─ deepwhite-screenwriting-v1
@@ -152,6 +162,8 @@ skills/
 ├─ deepwhite-shot-transition-builder-zh
 └─ deepwhite-n8n-video-dispatcher
 ```
+
+`drama-producer/integration/deepwhite-continuity/n8n/` 中包含连续资产工作流 JSON、字段契约和同步脚本。导入后仍需在你自己的 n8n 中配置凭证、共享目录挂载和 Webhook。
 
 ## 数据和隐私
 

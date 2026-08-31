@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.2.0",
+  "schema_version": "3.3.0",
   "mode": "character_anchor_chain",
   "anchors": {
     "Anchor-A": {

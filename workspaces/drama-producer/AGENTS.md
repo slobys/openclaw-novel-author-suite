@@ -4,8 +4,6 @@
 
 ## 1. 启动顺序与唯一权威
 
-路径约定：`OPENCLAW_STATE_DIR` 默认为 `~/.openclaw`，`OPENCLAW_ASSET_ROOT` 指向 n8n 的固定图片/视频结果根目录。不得把某台 NAS 的真实绝对路径写死到公共模板。
-
 每次开始或恢复任务时按顺序读取：
 
 1. `drama-workflow.yaml`：唯一机器流程、阶段、Gate 和状态权威；
@@ -125,7 +123,6 @@ scene_id
 - 人物/生物生产参考默认 9:16，环境/场景 16:9，道具 9:16；
 - 一图一主体、一角度、一状态，禁止拼图、多面板和说明文字；
 - 核心、常驻、单集重要角色及常驻生物必须形成 8 个独立 9:16 文件的标准方向包；横向设定页仅可做 `design_sheet`，不得进入视频引用；
-- `deepwhite-scene-pack-builder` 可在 Stage 30 辅助生成连续场景、人物、动物、生物和道具的独立多视角提示词；它必须继承 `scene_asset_handoff.json` 与现有资产 ID，不得重新规划 Scene 或改写场景绑定；
 - 视频只允许引用通过 `assets/video_reference_manifest.json` 安全 Gate 的资产；
 - 系列复用资产必须验证文件可读性、大小与 SHA256。
 
@@ -244,8 +241,8 @@ HTTP 200/201/202/204 只允许写 `webhook_accepted_unverified`。至少取得 n
 回调只允许携带标识和状态，不信任回调提供的任意绝对路径。根据 `project_id + job_id` 从固定根目录构造路径：
 
 ```text
-${OPENCLAW_ASSET_ROOT}/{project_id}/{job_id}/
-${OPENCLAW_ASSET_ROOT}/{project_id}/video_jobs/{video_job_id}/
+${OPENCLAW_ASSET_SHARED_ROOT}/{project_id}/{job_id}/
+${OPENCLAW_ASSET_SHARED_ROOT}/{project_id}/video_jobs/{video_job_id}/
 ```
 
 回调处理必须验证：
@@ -299,3 +296,188 @@ AUTO_PRODUCTION_MODE 默认不逐阶段询问用户。只有以下情况暂停�
 - 最终视频已验证。
 
 只有最终 MP4 验证成功，才能说“本集完成”。报告当前项目、阶段、权威证据、阻断原因和可恢复位置，不输出密钥、Base64 或内部敏感路径。
+
+## Tools
+
+### Local notes (migrated from TOOLS.md)
+
+# drama-producer 本地运行说明
+
+这些是部署环境约束，不参与生产阶段裁决；阶段与 Gate 以 `drama-workflow.yaml` 为准。
+
+## NAS 图片观察
+
+- OpenClaw `image` 工具不能直接读取 `${OPENCLAW_ASSET_SHARED_ROOT}/...` 时，先按清单校验文件大小和 SHA256，再复制到当前项目的只读验收目录。
+- 单张临时检查可使用支持本地绝对路径的图片查看工具。
+- 审核副本不替代 NAS 原图和 manifest 的权威性。
+
+## WebChat 图片上传
+
+- OpenClaw `2026.7.1-2` Gateway 单条 WebSocket 消息上限为 25 MiB。
+- Base64 和 JSON 会增加体积；原图总量建议控制在约 17 MiB 以下。
+- 默认每批最多 3 张、单张建议不超过 5 MiB。
+- 出现 `gateway closed (1009)` 或 `Max payload size exceeded` 时，清空附件或刷新页面后分批重传，禁止让旧大消息持续重试。
+- 多批上传完成前只接收和映射；用户明确“全部发送完成”后再开始下游工作。
+
+## jq 中文字段
+
+- 中文键使用 `."字段名"` 或 `.['字段名']`。
+- 比较数组唯一数量时显式加括号，例如：
+
+```bash
+((.assets | map(.asset_id) | unique | length) == (.assets | length))
+```
+
+<!-- BEGIN DEEPWHITE_CONTINUITY_INTEGRATION_V1 -->
+
+# DeepWhite Visual Continuity Integration（资产阶段增强）
+
+本节只增强资产设计与生图阶段，不覆盖完整成片状态机。`drama-workflow.yaml` 仍是唯一机器权威，最终成功状态仍是 `final_video_ready`。Scene Pack 不得替代 Scene Asset Planner，也不得删除视频派发、最终合成、Pipeline Evidence 或 Series Commit。
+
+```text
+script/scene_index.json
+  -> AUTO_MACHINE_MODE world_state JSON
+  -> deepwhite-scene-asset-planner
+  -> handoffs/scene_asset_handoff.json
+  -> deepwhite-scene-pack-builder
+  -> deepwhite-image-prompt-builder PACKAGER_ONLY
+  -> n8n dependency-aware generation
+  -> approved + hash-bound reference_registry
+  -> preliminary shotlist
+  -> deepwhite-scene-pack-builder SHOT_ASSET_GAP
+  -> final shotlist + binding gates
+  -> video dispatch + final composition
+  -> Pipeline Evidence + Series Commit
+```
+
+## 1. 技能职责边界
+
+### deepwhite-continuity-worldstate-zh
+只负责剧情事实、角色身份、地点、道具归属、时间线和状态。AUTO 模式必须输出 `world/characters.json`、`world/locations.json`、`world/props.json` 和 `continuity/continuity_handoff.json` 并通过确定性校验；不得规划摄影机或多角度图片资产。
+
+### deepwhite-scene-asset-planner
+是 Scene 与地点/场景资产绑定的唯一权威。必须根据 `script/scene_index.json` 生成 100% 覆盖的 `handoffs/scene_asset_handoff.json`。后续 Scene Pack、Shotlist、Transition 和 Video Dispatcher 都只能继承，不能重新猜测或改绑。
+
+### deepwhite-scene-pack-builder
+是视觉连续性中枢，负责：
+
+- STYLE / SCENE或SUBJECT DNA / SPATIAL或STRUCTURE / CONTINUITY 四锁；
+- 场景布局、母版、验证机位；
+- 人物、动物、生物、道具锚点；
+- 逻辑父实体展开为单图子资产；
+- 资产依赖图、参考图职责、lock_hash；
+- 分镜完成后的缺口补全。
+
+### deepwhite-image-prompt-builder
+在本流水线中必须使用 `PACKAGER_ONLY`。只允许：
+
+- 原样复制上游已经封存的 Prompt；
+- 生成 Markdown、JSON 和唯一文件名；
+- 检查 `lock_hash`；
+- 不得重新设计、总结、精炼或同义改写四锁。
+
+发现锁发生变化，必须返回：
+
+```text
+LOCK_MUTATION_DETECTED
+```
+
+### deepwhite-n8n-asset-dispatcher
+负责校验 asset-job v2.1、dry-run、提交和等待 reference registry。提交前必须验证路径、依赖、完整 `lock_hash` 和 Payload SHA256；完成时必须验证 job、payload、lock、文件大小和文件 SHA256。不得重新写 Prompt 或调整视觉设定。
+
+## 2. 两次 Scene Pack 调用
+
+### BASE_ASSET
+在资产盘点后、分镜前执行。输出基础人物锚点、场景布局/母版/反向验证和道具母版。
+
+### SHOT_ASSET_GAP
+在分镜后执行。只为实际镜头补充缺少的 `V/CV/PX/CP/SH` 资产，不得为每个场景机械生成所有视角。
+
+## 3. 父实体与子图片资产
+
+`assets/asset_list.json` 是逻辑父实体清单；n8n 只生成 `expanded_asset_list*.json` 中的子资产。
+
+```text
+AST-CH01 -> CH001-ST01-C01-v001
+AST-CH01 -> CH001-ST01-C06-v001
+AST-LOC01 -> SC001-ST01-L01-v001
+AST-LOC01 -> SC001-ST01-M01-v001
+AST-LOC01 -> SC001-ST01-V01-v001
+```
+
+每个子资产只对应一张图片、一个 Prompt 和一个唯一文件名。
+
+## 4. 参考图必须真实注入
+
+`depends_on` 和 `reference_inputs` 不只是文字标签。n8n 必须从共享目录 `{OPENCLAW_ASSET_SHARED_ROOT}/{project_id}/reference_registry.json` 找到已审核通过的图片文件，并将它们作为 Gemini 请求的图片输入。项目内 `assets/reference_registry.json` 只是发送脚本完成 job/payload/lock/文件 Hash 校验后写入的验证快照，不得由 Agent 自行伪造或手工拼接。
+
+只有 `approved` 图片可进入参考链。`failed/rejected/superseded/unreviewed` 均禁止引用。
+
+## 5. 分镜字段扩展
+
+每个镜头除原字段外，必须支持：
+
+```yaml
+scene_entity_id:
+scene_view_asset_id:
+character_ids: []
+character_anchor_ids: []
+prop_asset_ids: []
+camera_position:
+camera_direction:
+entry_position:
+exit_position:
+reference_inputs: []
+asset_request:
+```
+
+缺少合适视觉资产时，`asset_request` 必须记录需求，交给 `SHOT_ASSET_GAP`，不得临时发明未登记场景。
+
+## 6. 画幅
+
+```text
+场景/分镜/最终镜头：默认16:9
+人物/动物/生物/道具基础资产：默认9:16
+```
+
+最终成片画幅仍由 `project.json` 控制，不能被定妆资产的9:16覆盖。
+
+## 7. 新增项目文件
+
+```text
+assets/continuity/
+assets/expanded_asset_list.base.json
+assets/expanded_asset_list.shot.json
+assets/asset_dependency_graph.base.json
+assets/asset_dependency_graph.shot.json
+assets/reference_plan.base.json
+assets/reference_plan.shot.json
+assets/reference_registry.json
+assets/shot_asset_requests.json
+prompts/base_assets/
+prompts/shot_assets/
+```
+
+## 8. 完成与失效
+
+- 四锁改变：相关家族全部下游资产失效；
+- 人物服装或脸部改变：人物派生图和相关分镜资产失效；
+- 场景空间改变：场景母版、机位、镜头资产失效；
+- 参考图被标为 FAILED 或 SUPERSEDED：所有依赖它的未完成资产重新阻塞；
+- 未通过 reference gate，不得进入依赖真实锚点的分镜设计。
+- 所有必需资产都必须是 `approved`；`rejected/failed/superseded` 虽是终态，但绝不构成阶段成功。
+- 资产阶段完成不等于单集完成；只有最终 MP4、Pipeline Evidence 和 Series Commit 全部通过，才能标记 `final_video_ready`。
+
+## 9. AUTO_PRODUCTION_MODE
+
+自动模式下禁止把 Scene Pack 的交互式“下一张”提示交给用户。必须使用 `PIPELINE_BATCH` 一次写完当前 Pass 的机器文件。
+
+正式自动生产必须使用 `--wait --registry-snapshot=assets/reference_registry.json` 等待并验证共享 Registry；若共享目录不可读，将项目标记为：
+
+```text
+blocked_waiting_reference_registry
+```
+
+用户后续说“继续当前项目”时从 registry gate 恢复，不得重做前面阶段。
+
+<!-- END DEEPWHITE_CONTINUITY_INTEGRATION_V1 -->

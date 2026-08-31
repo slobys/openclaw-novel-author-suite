@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deepwhite.local/schemas/reference-plan.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_id",
+    "targets"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "reference_inputs"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "reference_inputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "asset_id",
+                "role",
+                "required",
+                "approved_only"
+              ],
+              "properties": {
+                "asset_id": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "approved_only": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

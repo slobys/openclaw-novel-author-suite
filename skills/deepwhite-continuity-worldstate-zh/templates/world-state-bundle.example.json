@@ -1,0 +1,45 @@
+{
+  "characters": {
+    "schema_version": "1.0",
+    "project_id": "example_project",
+    "characters": [
+      {
+        "character_id": "CHAR_A",
+        "name": "角色甲",
+        "identity_fingerprint": {"face": "来源剧本已确认身份锚点"},
+        "current_state": {"costume": "灰色外套", "held_props": ["PROP_KEY"]}
+      }
+    ]
+  },
+  "locations": {
+    "schema_version": "1.0",
+    "project_id": "example_project",
+    "locations": [
+      {"location_id": "LOC_ROOM", "name": "房间", "current_state": {"time": "夜"}}
+    ]
+  },
+  "props": {
+    "schema_version": "1.0",
+    "project_id": "example_project",
+    "props": [
+      {"prop_id": "PROP_KEY", "name": "钥匙", "current_state": {"owner_id": "CHAR_A", "condition": "intact"}}
+    ]
+  },
+  "continuity_handoff": {
+    "schema_version": "1.0",
+    "project_id": "example_project",
+    "source_scene_index": "script/scene_index.json",
+    "scenes": [
+      {
+        "scene_id": "SC01",
+        "character_ids": ["CHAR_A"],
+        "location_id": "LOC_ROOM",
+        "prop_ids": ["PROP_KEY"],
+        "state_before": {"CHAR_A": {"position": "门边"}},
+        "state_changes": {"PROP_KEY": {"holder": "CHAR_A"}},
+        "state_after": {"CHAR_A": {"held_props": ["PROP_KEY"]}},
+        "evidence": ["剧本：角色甲从门边拿起钥匙"]
+      }
+    ]
+  }
+}

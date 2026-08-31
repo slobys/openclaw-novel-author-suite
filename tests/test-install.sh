@@ -46,6 +46,9 @@ test -f "${OPENCLAW_STATE_DIR}/workspace-novel-producer/IDENTITY.md"
 test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/SOUL.md"
 test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-00-novel-series-orchestrator/SKILL.md"
 test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-scene-pack-builder/SKILL.md"
+test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-continuity-worldstate-zh/scripts/validate_world_state_bundle.py"
+test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-n8n-asset-dispatcher/scripts/validate-continuity-job.mjs"
+test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/integration/deepwhite-continuity/n8n/OpenClaw连续资产依赖生图_参考图注入版_v2.json"
 test "$(find "${OPENCLAW_STATE_DIR}/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 10
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-producer/memory/private.md")" = 'private memory'
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-drama-producer/projects/demo/private.txt")" = 'private project'

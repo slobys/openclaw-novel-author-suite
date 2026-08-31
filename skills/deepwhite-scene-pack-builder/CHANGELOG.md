@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.3.0
+- 新增 PIPELINE_BATCH 模式
+- 新增 BASE_ASSET 与 SHOT_ASSET_GAP 双阶段
+- 新增逻辑父实体到单图子资产展开
+- 新增 lock_hash、依赖图与 reference_plan 输出契约
+- 新增 approved-only 参考图门禁
+- 保留 v3.2.0 的角色锚点链及全部交互能力
+
 ## 3.2.0
 - 新增角色锚点链模式 Character Anchor Chain
 - 支持把当前上传人物图注册为 Anchor-A / Anchor-B / Anchor-C / Anchor-D

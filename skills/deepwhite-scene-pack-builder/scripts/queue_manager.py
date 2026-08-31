@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal scene asset queue manager for deepwhite-scene-pack-builder v3.2.0."""
+"""Minimal scene asset queue manager for deepwhite-scene-pack-builder v3.3.0."""
 
 from __future__ import annotations
 

@@ -4,6 +4,13 @@ set -Eeuo pipefail
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
 SKILLS_DIR="${OPENCLAW_SKILLS_DIR:-${STATE_DIR}/skills}"
 BACKUP_ROOT="${STATE_DIR}/backups/drama-pipeline-suite-uninstall"
+die() { printf '[drama-pipeline-suite] ERROR: %s\n' "$*" >&2; exit 1; }
+
+for target in "${STATE_DIR}" "${SKILLS_DIR}" "${BACKUP_ROOT}"; do
+  case "${target}" in
+    /|"${HOME}") die "Unsafe uninstall target: ${target}" ;;
+  esac
+done
 SKILL_NAMES=(
   deepwhite-00-novel-series-orchestrator
   deepwhite-continuity-worldstate-zh

@@ -173,7 +173,14 @@ def reserve(job_path: Path, max_attempts: int) -> dict[str, Any]:
     return {**report, "event": "reserved", "reserved_asset_count": len(records), "ledger_path": str(ledger_path(job_path))}
 
 
-def update_status(job_path: Path, status: str, max_attempts: int, reason_code: str | None, evidence: str | None) -> dict[str, Any]:
+def update_status(
+    job_path: Path,
+    status: str,
+    max_attempts: int,
+    reason_code: str | None,
+    evidence: str | None,
+    asset_ids: set[str] | None = None,
+) -> dict[str, Any]:
     if status not in STATUSES:
         raise ValueError(f"未知 status：{status}")
     job = load(job_path)
@@ -181,6 +188,14 @@ def update_status(job_path: Path, status: str, max_attempts: int, reason_code: s
     records = asset_records(job, file_sha(job_path), parse_errors)
     if parse_errors:
         return {"schema_version": "1.0", "passed": False, "errors": parse_errors}
+    if asset_ids:
+        known_ids = {record["asset_id"] for record in records}
+        unknown_ids = sorted(asset_ids - known_ids)
+        if unknown_ids:
+            return {"schema_version": "1.0", "passed": False, "errors": [
+                "Job 中不存在 asset_id：" + ", ".join(unknown_ids)
+            ]}
+        records = [record for record in records if record["asset_id"] in asset_ids]
     path = ledger_path(job_path)
     ledger = load_ledger(path, max_attempts)
     errors: list[str] = []
@@ -225,6 +240,7 @@ def main() -> int:
     update.add_argument("--status", required=True, choices=sorted(STATUSES))
     update.add_argument("--reason-code")
     update.add_argument("--evidence")
+    update.add_argument("--asset-id", action="append", default=[])
     update.add_argument("--max-attempts", type=int, default=MAX_ATTEMPTS_DEFAULT)
     update.add_argument("--out", type=Path)
     args = parser.parse_args()
@@ -237,7 +253,14 @@ def main() -> int:
         elif args.command == "reserve":
             report = reserve(job_path, args.max_attempts)
         else:
-            report = update_status(job_path, args.status, args.max_attempts, args.reason_code, args.evidence)
+            report = update_status(
+                job_path,
+                args.status,
+                args.max_attempts,
+                args.reason_code,
+                args.evidence,
+                set(args.asset_id),
+            )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         report = {"schema_version": "1.0", "passed": False, "errors": [str(exc)]}
     if args.out:

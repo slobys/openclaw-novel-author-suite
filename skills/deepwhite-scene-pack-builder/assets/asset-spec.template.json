@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.2.0",
+  "schema_version": "3.3.0",
   "zero_config_defaults": {
     "output_language": "zh-CN",
     "workflow_mode": "STEP_BY_STEP",

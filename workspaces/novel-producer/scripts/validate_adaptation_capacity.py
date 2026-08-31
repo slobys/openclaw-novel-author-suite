@@ -83,6 +83,14 @@ def validate(series_root: Path) -> dict:
         add_unique(errors, "plan/series_plan.json 缺少 episodes")
         episode_rows = []
 
+    chapter_assignment_counts: dict[str, int] = {}
+    for episode in episode_rows:
+        if not isinstance(episode, dict) or not isinstance(episode.get("source_chapter_ids"), list):
+            continue
+        for chapter_id in {str(item) for item in episode["source_chapter_ids"]}:
+            chapter_assignment_counts[chapter_id] = chapter_assignment_counts.get(chapter_id, 0) + 1
+    claimed_source_spans: list[tuple[str, int, int, int]] = []
+
     report_rows: list[dict] = []
     plan_by_number: dict[int, dict] = {}
     for row in episode_rows:
@@ -117,7 +125,38 @@ def validate(series_root: Path) -> dict:
                 add_unique(errors, f"{label} 引用未知源段：{', '.join(unknown_segments)}")
             source_chars = sum(segment_chars.get(str(item), 0) for item in source_segment_ids)
         else:
-            source_chars = sum(chapter_chars.get(str(item), 0) for item in chapter_ids)
+            source_spans = row.get("source_spans")
+            if isinstance(source_spans, list) and source_spans:
+                source_chars = 0
+                declared_chapter_ids = {str(item) for item in chapter_ids}
+                span_chapter_ids: set[str] = set()
+                for span_index, span in enumerate(source_spans, start=1):
+                    if not isinstance(span, dict):
+                        add_unique(errors, f"{label} source_spans[{span_index}] 必须是对象")
+                        continue
+                    chapter_id = str(span.get("chapter_id", ""))
+                    start = span.get("start")
+                    end = span.get("end")
+                    chapter_length = chapter_chars.get(chapter_id)
+                    if chapter_id not in declared_chapter_ids:
+                        add_unique(errors, f"{label} source_span 引用未声明章节：{chapter_id}")
+                    if chapter_length is None:
+                        add_unique(errors, f"{label} source_span 引用未知章节：{chapter_id}")
+                        continue
+                    if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start or end > chapter_length:
+                        add_unique(errors, f"{label} source_span 越界：{chapter_id}[{start}:{end}] / {chapter_length}")
+                        continue
+                    source_chars += end - start
+                    span_chapter_ids.add(chapter_id)
+                    claimed_source_spans.append((chapter_id, start, end, number))
+                missing_span_chapters = sorted(declared_chapter_ids - span_chapter_ids)
+                if missing_span_chapters:
+                    add_unique(errors, f"{label} 已声明章节缺少 source_spans：{missing_span_chapters}")
+            else:
+                repeated = [str(item) for item in chapter_ids if chapter_assignment_counts.get(str(item), 0) > 1]
+                if repeated:
+                    add_unique(errors, f"{label} 拆分章节 {sorted(set(repeated))} 时必须提供精确 source_spans，不能重复计算整章字数")
+                source_chars = sum(chapter_chars.get(str(item), 0) for item in chapter_ids)
         soft_limit = round(soft_rate * float(duration) / 90)
         hard_limit = round(hard_rate * float(duration) / 90)
         if source_chars > hard_limit:
@@ -200,7 +239,20 @@ def validate(series_root: Path) -> dict:
             "hard_limit": hard_limit,
             "source_event_count": len(event_ids),
             "source_segment_count": len(source_segment_ids) if isinstance(source_segment_ids, list) else 0,
+            "source_span_count": len(row.get("source_spans", [])) if isinstance(row.get("source_spans"), list) else 0,
         })
+
+    by_chapter_spans: dict[str, list[tuple[int, int, int]]] = {}
+    for chapter_id, start, end, number in claimed_source_spans:
+        by_chapter_spans.setdefault(chapter_id, []).append((start, end, number))
+    for chapter_id, spans in by_chapter_spans.items():
+        ordered = sorted(spans)
+        for previous, current in zip(ordered, ordered[1:]):
+            if current[0] < previous[1]:
+                add_unique(
+                    errors,
+                    f"章节 {chapter_id} 的 source_spans 重叠：第{previous[2]}集[{previous[0]}:{previous[1]}] 与第{current[2]}集[{current[0]}:{current[1]}]",
+                )
 
     episodes_dir = series_root / "episodes"
     for brief_path in sorted(episodes_dir.glob("episode_*.json")):

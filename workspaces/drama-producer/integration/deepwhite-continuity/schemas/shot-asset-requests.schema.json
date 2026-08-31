@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deepwhite.local/schemas/shot-asset-requests.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_id",
+    "requests"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "shot_id",
+          "request_type",
+          "family_id",
+          "description"
+        ],
+        "properties": {
+          "shot_id": {
+            "type": "string"
+          },
+          "request_type": {
+            "enum": [
+              "scene_view",
+              "character_view",
+              "character_pose",
+              "prop_state",
+              "composite_shot"
+            ]
+          },
+          "family_id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

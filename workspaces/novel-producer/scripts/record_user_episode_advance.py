@@ -111,6 +111,32 @@ def final_video_gate(
     return not errors, errors, evidence
 
 
+def select_completed_queue_item(series_root: Path, episode_number: int) -> Path | None:
+    """Return the most recently series-committed revision for an episode."""
+    done_dir = series_root / "queue" / "done"
+    base_stem = f"episode_{episode_number:03d}"
+    candidates: list[tuple[str, Path]] = []
+    for path in done_dir.glob(f"{base_stem}*.json"):
+        if path.stem != base_stem and not path.stem.startswith(f"{base_stem}_"):
+            continue
+        queue_item = load_json(path)
+        if queue_item.get("episode_number") != episode_number:
+            continue
+        project_id = queue_item.get("episode_project_id")
+        if not project_id:
+            continue
+        commit_path = done_dir / f".{project_id}.series_commit.json"
+        if not commit_path.is_file():
+            continue
+        commit = load_json(commit_path)
+        if commit.get("episode_project_id") != project_id or commit.get("episode_number") != episode_number:
+            continue
+        candidates.append((str(commit.get("committed_at") or ""), path))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--series-root", type=Path, required=True)
@@ -135,13 +161,16 @@ def main() -> int:
     if args.next_episode <= args.previous_episode:
         raise SystemExit("next episode must be greater than previous episode")
 
-    queue_item_path = args.series_root / "queue" / "done" / f"episode_{args.previous_episode:03d}.json"
-    if not queue_item_path.is_file():
+    queue_item_path = select_completed_queue_item(args.series_root, args.previous_episode)
+    if queue_item_path is None:
         result = {
             "recorded": False,
             "advance_allowed": False,
             "ui_close_required": True,
-            "errors": [f"previous episode is not in queue/done: {queue_item_path}"],
+            "errors": [
+                f"previous episode has no series-committed queue/done item: "
+                f"episode_{args.previous_episode:03d}"
+            ],
         }
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 2
@@ -164,6 +193,7 @@ def main() -> int:
         "previous_episode": args.previous_episode,
         "next_episode": args.next_episode,
         "episode_project_id": project_id,
+        "queue_item_path": str(queue_item_path),
         "progress_card_owner_session_key": owner,
         "ui_close_required": bool(owner),
         "final_video_gate": "pass" if gate_passed else "fail",

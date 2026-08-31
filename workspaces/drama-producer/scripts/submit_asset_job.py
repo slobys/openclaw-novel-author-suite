@@ -13,12 +13,22 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VALIDATOR = ROOT / "scripts" / "validate_asset_render_specs.py"
-RETRY_GUARD = ROOT / "scripts" / "asset_retry_guard.py"
 OPENCLAW_STATE_DIR = Path(
     os.environ.get("OPENCLAW_STATE_DIR", os.environ.get("OPENCLAW_HOME", Path.home() / ".openclaw"))
 ).expanduser()
 SKILLS_DIR = Path(os.environ.get("OPENCLAW_SKILLS_DIR", OPENCLAW_STATE_DIR / "skills")).expanduser()
+HOST_ASSET_ROOT = Path(
+    os.environ.get(
+        "OPENCLAW_ASSET_SHARED_ROOT",
+        os.environ.get("OPENCLAW_ASSET_ROOT", OPENCLAW_STATE_DIR / "data" / "openclaw-assets"),
+    )
+).expanduser()
+N8N_ASSET_ROOT = Path(os.environ.get("N8N_ASSET_ROOT", "/data/openclaw-assets"))
+REFERENCE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+REFERENCE_MAX_BYTES = 20 * 1024 * 1024
+OPENAI_NATIVE_MULTIPART_MAX_REFERENCES = 2
+VALIDATOR = ROOT / "scripts" / "validate_asset_render_specs.py"
+RETRY_GUARD = ROOT / "scripts" / "asset_retry_guard.py"
 DEPLOYED_UPSTREAM = SKILLS_DIR / "deepwhite-n8n-asset-dispatcher" / "scripts" / "send-assets-to-n8n.mjs"
 DEPLOYED_PROMPT_VALIDATOR = Path(
     SKILLS_DIR / "deepwhite-image-prompt-builder" / "scripts" / "validate_location_prompt_manifest.py"
@@ -62,6 +72,108 @@ def auto_retry_guard_required(project_root: Path, payload: dict) -> bool:
     return any(isinstance(row, dict) and row.get("asset_lineage_id") for row in (payload.get("assets") or []))
 
 
+def validate_reference_images_for_n8n(payload: dict) -> list[str]:
+    """Validate n8n-visible paths and their host-side mounted files before dispatch."""
+    errors: list[str] = []
+    n8n_root = N8N_ASSET_ROOT.resolve()
+    host_root = HOST_ASSET_ROOT.resolve()
+    for asset_index, asset in enumerate(payload.get("assets") or []):
+        if not isinstance(asset, dict):
+            continue
+        asset_id = str(asset.get("asset_id") or f"assets[{asset_index}]")
+        references = asset.get("reference_images")
+        if references is None:
+            continue
+        if not isinstance(references, list):
+            errors.append(f"{asset_id}: reference_images 必须是数组")
+            continue
+        if len(references) > OPENAI_NATIVE_MULTIPART_MAX_REFERENCES:
+            errors.append(
+                f"{asset_id}: 当前 OpenAI 原生 multipart 分支最多支持 "
+                f"{OPENAI_NATIVE_MULTIPART_MAX_REFERENCES} 张参考图，实际为 {len(references)} 张"
+            )
+            continue
+        for reference_index, raw_path in enumerate(references):
+            label = f"{asset_id}.reference_images[{reference_index}]"
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                errors.append(f"{label}: 必须是非空字符串")
+                continue
+            n8n_path = Path(raw_path.strip())
+            try:
+                relative = n8n_path.resolve().relative_to(n8n_root)
+            except ValueError:
+                errors.append(
+                    f"{label}: 必须使用 n8n 容器固定根 {N8N_ASSET_ROOT}/，"
+                    f"不能使用宿主机路径"
+                )
+                continue
+            host_path = (host_root / relative).resolve()
+            try:
+                host_path.relative_to(host_root)
+            except ValueError:
+                errors.append(f"{label}: 映射后超出宿主机固定资产根目录")
+                continue
+            try:
+                stat = host_path.stat()
+            except OSError as exc:
+                errors.append(f"{label}: 宿主机映射文件不可读：{exc}")
+                continue
+            if not host_path.is_file() or stat.st_size <= 0 or stat.st_size > REFERENCE_MAX_BYTES:
+                errors.append(f"{label}: 文件大小非法：{stat.st_size}")
+            if host_path.suffix.lower() not in REFERENCE_EXTENSIONS:
+                errors.append(f"{label}: 文件格式不受支持：{host_path.suffix}")
+    return errors
+
+
+def validate_partial_recovery(
+    project_root: Path,
+    payload: dict,
+    missing_ids: set[str],
+) -> list[str]:
+    """Allow an immutable replacement Job to omit assets already accepted by its predecessor."""
+    if not missing_ids:
+        return []
+    context = payload.get("recovery_context")
+    if not isinstance(context, dict):
+        return ["缺少计划生成资产：" + ", ".join(sorted(missing_ids))]
+    source_job_id = str(context.get("source_job_id") or "")
+    if not source_job_id or source_job_id != str(payload.get("supersedes_job_id") or ""):
+        return ["recovery_context.source_job_id 必须等于 supersedes_job_id"]
+    accepted_ids = {
+        str(value)
+        for value in (context.get("accepted_asset_ids") or [])
+        if isinstance(value, str) and value
+    }
+    uncovered = missing_ids - accepted_ids
+    errors = []
+    if uncovered:
+        errors.append("缺少计划生成资产：" + ", ".join(sorted(uncovered)))
+    project_id = str(payload.get("project_id") or "")
+    source_dir = (HOST_ASSET_ROOT / project_id / source_job_id).resolve()
+    try:
+        source_dir.relative_to(HOST_ASSET_ROOT.resolve())
+    except ValueError:
+        return errors + ["recovery_context 指向固定资产根目录之外"]
+    for asset_id in sorted(missing_ids & accepted_ids):
+        status_path = source_dir / "_status" / f"{asset_id}.json"
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            filename = str(status.get("relative_path") or status.get("filename") or "")
+            output_path = (source_dir / filename).resolve()
+            output_path.relative_to(source_dir)
+            stat = output_path.stat()
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"{asset_id}: 前序 Job accepted 证据不可验证：{exc}")
+            continue
+        if status.get("project_id") != project_id or status.get("job_id") != source_job_id:
+            errors.append(f"{asset_id}: 前序 Job 状态标识不匹配")
+        if status.get("asset_id") != asset_id or status.get("final_status") != "accepted":
+            errors.append(f"{asset_id}: 前序 Job 未证明 accepted")
+        if stat.st_size != status.get("file_size") or sha256_file(output_path) != status.get("sha256"):
+            errors.append(f"{asset_id}: 前序 Job 输出大小或 SHA256 不匹配")
+    return errors
+
+
 def run_guard(job: Path, command: str, *extra: str) -> int:
     completed = subprocess.run(
         [sys.executable, str(RETRY_GUARD), command, "--job", str(job), *extra],
@@ -88,6 +200,13 @@ def main() -> int:
         return 2
     except (OSError, json.JSONDecodeError) as exc:
         print(f"asset-job 不可读：{exc}", file=sys.stderr)
+        return 2
+
+    reference_errors = validate_reference_images_for_n8n(job_payload)
+    if reference_errors:
+        print("资产任务未提交：n8n 参考图执行边界 Gate 未通过", file=sys.stderr)
+        for error in reference_errors:
+            print(f"- {error}", file=sys.stderr)
         return 2
 
     requirements = project_root / "assets" / "location_asset_requirements.json"
@@ -131,11 +250,12 @@ def main() -> int:
                 for row in (job_payload.get("assets") or [])
                 if isinstance(row, dict) and row.get("asset_id")
             }
-            missing_ids = sorted(required_ids - submitted_ids)
+            missing_ids = required_ids - submitted_ids
             reuse_overlap = sorted(reuse_ids & submitted_ids)
-            if missing_ids or reuse_overlap:
-                if missing_ids:
-                    print("asset-job 缺少计划生成资产：" + ", ".join(missing_ids), file=sys.stderr)
+            recovery_errors = validate_partial_recovery(project_root, job_payload, missing_ids)
+            if recovery_errors or reuse_overlap:
+                for error in recovery_errors:
+                    print(error, file=sys.stderr)
                 if reuse_overlap:
                     print("asset-job 错误包含复用资产：" + ", ".join(reuse_overlap), file=sys.stderr)
                 return 2

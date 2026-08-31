@@ -1,0 +1,22 @@
+{
+  "schema_version": "3.3.0",
+  "invocation_mode": "PIPELINE_BATCH",
+  "passes": [
+    "BASE_ASSET",
+    "SHOT_ASSET_GAP"
+  ],
+  "outputs": {
+    "BASE_ASSET": [
+      "assets/continuity/index.json",
+      "assets/expanded_asset_list.base.json",
+      "assets/asset_dependency_graph.base.json",
+      "assets/reference_plan.base.json"
+    ],
+    "SHOT_ASSET_GAP": [
+      "assets/shot_asset_requests.json",
+      "assets/expanded_asset_list.shot.json",
+      "assets/asset_dependency_graph.shot.json",
+      "assets/reference_plan.shot.json"
+    ]
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "schema_version": "2.1",
+  "project_id": "MXZ",
+  "job_id": "MXZ_base_001",
+  "source": "deepwhite-scene-pack-builder/BASE_ASSET",
+  "defaults": {
+    "model": "gemini-3.1-flash-image",
+    "image_size": "2K",
+    "review_model": "gemini-2.5-flash",
+    "review_min_score": 85,
+    "review_max_retries": 2
+  },
+  "assets": [
+    {
+      "asset_id": "CH001-ST01-C01-v001",
+      "parent_asset_id": "AST-CH01",
+      "family_id": "CH001",
+      "style_id": "ST01",
+      "asset_code": "C01",
+      "category": "character",
+      "name": "林满仓·角色定妆总表",
+      "aspect_ratio": "9:16",
+      "generation_stage": "anchor",
+      "lock_id": "LOCK-CH001-ST01",
+      "lock_hash": "sha256:1ba67e1f8be452f66a2789580c17499ff5652574d7a0455ff8c5ca078f8492bf",
+      "depends_on": [],
+      "reference_inputs": [],
+      "anchor_roles": [
+        "identity_master",
+        "proportion_master",
+        "costume_master"
+      ],
+      "prompt_zh": "【PORTABLE HARD LOCK｜独立可用｜禁止删减】\n【STYLE LOCK｜固定原文】示例风格锁。\n【SCENE DNA / SUBJECT DNA｜固定原文】示例资产DNA。\n【SPATIAL LOCK / STRUCTURE LOCK｜固定原文】示例结构锁。\n【CONTINUITY LOCK｜固定原文】示例连续性锁。\n【CURRENT ASSET】示例任务。",
+      "filename": "MXZ_CH001_ST01_C01_v001.png",
+      "status": "planned"
+    },
+    {
+      "asset_id": "CH001-ST01-C06-v001",
+      "parent_asset_id": "AST-CH01",
+      "family_id": "CH001",
+      "style_id": "ST01",
+      "asset_code": "C06",
+      "category": "character",
+      "name": "林满仓·头部身份锚点",
+      "aspect_ratio": "9:16",
+      "generation_stage": "anchor",
+      "lock_id": "LOCK-CH001-ST01",
+      "lock_hash": "sha256:1ba67e1f8be452f66a2789580c17499ff5652574d7a0455ff8c5ca078f8492bf",
+      "depends_on": [
+        "CH001-ST01-C01-v001"
+      ],
+      "reference_inputs": [
+        {
+          "asset_id": "CH001-ST01-C01-v001",
+          "role": "identity_master",
+          "required": true,
+          "approved_only": true
+        }
+      ],
+      "anchor_roles": [
+        "face_master"
+      ],
+      "prompt_zh": "【PORTABLE HARD LOCK｜独立可用｜禁止删减】\n【STYLE LOCK｜固定原文】示例风格锁。\n【SCENE DNA / SUBJECT DNA｜固定原文】示例资产DNA。\n【SPATIAL LOCK / STRUCTURE LOCK｜固定原文】示例结构锁。\n【CONTINUITY LOCK｜固定原文】示例连续性锁。\n【CURRENT ASSET】示例任务。",
+      "filename": "MXZ_CH001_ST01_C06_v001.png",
+      "status": "planned"
+    },
+    {
+      "asset_id": "SC001-ST01-L01-v001",
+      "parent_asset_id": "AST-LOC01",
+      "family_id": "SC001",
+      "style_id": "ST01",
+      "asset_code": "L01",
+      "category": "location",
+      "name": "林家院落·俯视空间布局",
+      "aspect_ratio": "16:9",
+      "generation_stage": "anchor",
+      "scene_ids": ["SC001"],
+      "location_id": "LOC001",
+      "sub_location_id": "SUB001",
+      "location_asset_id": "LOC_ASSET_001",
+      "lock_id": "LOCK-SC001-ST01",
+      "lock_hash": "sha256:1ba67e1f8be452f66a2789580c17499ff5652574d7a0455ff8c5ca078f8492bf",
+      "depends_on": [],
+      "reference_inputs": [],
+      "anchor_roles": [
+        "spatial_topology"
+      ],
+      "prompt_zh": "【PORTABLE HARD LOCK｜独立可用｜禁止删减】\n【STYLE LOCK｜固定原文】示例风格锁。\n【SCENE DNA / SUBJECT DNA｜固定原文】示例资产DNA。\n【SPATIAL LOCK / STRUCTURE LOCK｜固定原文】示例结构锁。\n【CONTINUITY LOCK｜固定原文】示例连续性锁。\n【CURRENT ASSET】示例任务。",
+      "filename": "MXZ_SC001_ST01_L01_v001.png",
+      "status": "planned"
+    },
+    {
+      "asset_id": "SC001-ST01-M01-v001",
+      "parent_asset_id": "AST-LOC01",
+      "family_id": "SC001",
+      "style_id": "ST01",
+      "asset_code": "M01",
+      "category": "location",
+      "name": "林家院落·场景母版",
+      "aspect_ratio": "16:9",
+      "generation_stage": "anchor",
+      "scene_ids": ["SC001"],
+      "location_id": "LOC001",
+      "sub_location_id": "SUB001",
+      "location_asset_id": "LOC_ASSET_001",
+      "lock_id": "LOCK-SC001-ST01",
+      "lock_hash": "sha256:1ba67e1f8be452f66a2789580c17499ff5652574d7a0455ff8c5ca078f8492bf",
+      "depends_on": [
+        "SC001-ST01-L01-v001"
+      ],
+      "reference_inputs": [
+        {
+          "asset_id": "SC001-ST01-L01-v001",
+          "role": "spatial_topology",
+          "required": true,
+          "approved_only": true
+        }
+      ],
+      "anchor_roles": [
+        "visual_master"
+      ],
+      "prompt_zh": "【PORTABLE HARD LOCK｜独立可用｜禁止删减】\n【STYLE LOCK｜固定原文】示例风格锁。\n【SCENE DNA / SUBJECT DNA｜固定原文】示例资产DNA。\n【SPATIAL LOCK / STRUCTURE LOCK｜固定原文】示例结构锁。\n【CONTINUITY LOCK｜固定原文】示例连续性锁。\n【CURRENT ASSET】示例任务。",
+      "filename": "MXZ_SC001_ST01_M01_v001.png",
+      "status": "planned"
+    }
+  ]
+}
