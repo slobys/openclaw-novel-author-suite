@@ -37,7 +37,7 @@ metadata: {"openclaw":{"requires":{"bins":["node"],"env":["N8N_ASSET_WEBHOOK_URL
 
 ## 任务 JSON
 
-严格使用 `references/ASSET_JOB_SCHEMA.md`。核心结构：
+普通兼容任务使用 `references/ASSET_JOB_SCHEMA.md` 的 v1 结构；自动生产与连续性任务必须直接使用下方 v2.1 最高优先级契约。v1 核心结构：
 
 ```json
 {
@@ -128,6 +128,11 @@ lock_hash
 depends_on
 reference_inputs
 anchor_roles
+asset_role
+asset_kind
+angle_id
+layout_type
+contains_multiple_independent_assets
 ```
 
 派发前必须：
@@ -140,6 +145,7 @@ anchor_roles
 6. 使用 `send-continuity-job-to-n8n.mjs` 提交；`--dry-run` 不要求 Webhook 环境变量；
 7. 正式自动生产必须加 `--wait --registry-snapshot=assets/reference_registry.json`；
 8. 只有每个必需资产都为 `approved`，且 `job_id`、`payload_sha256`、`lock_hash`、文件大小和文件 SHA256 全部匹配，才算本阶段完成。
+9. 用于视频生产的角色、场景、异兽和关键道具必须拆成独立图片：`asset_role=video_reference`、`layout_type=single_view_clean`、`contains_multiple_independent_assets=false`，并提供独立 `angle_id`；禁止把多个视角拼进同一张图。
 
 `shared_asset_root` 只能来自 Gateway 的 `OPENCLAW_ASSET_SHARED_ROOT`，禁止由任务 Payload 指定。HTTP 2xx 仍只记录为 `webhook_accepted_unverified`。
 

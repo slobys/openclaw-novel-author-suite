@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="1.2.0"
+SUITE_VERSION="1.3.0"
 REPOSITORY="slobys/openclaw-novel-author-suite"
 REF="${DRAMA_SUITE_REF:-drama-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"

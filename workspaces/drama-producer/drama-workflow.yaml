@@ -58,6 +58,14 @@ default_settings:
     require_file_sha256: true
     require_file_size: true
     reject_statuses: [failed, rejected, superseded, unreviewed]
+  asset_visual_review:
+    semantic_authority: n8n_structured_visual_qa
+    agent_mode: exception_only
+    skip_agent_review_when: [registry_status_is_approved, qa_evidence_passed, file_size_and_sha256_match, production_safety_complete, ambiguity_reasons_empty]
+    exception_triggers: [qa_evidence_missing_or_invalid, ambiguity_reasons_nonempty, reference_consistency_unknown, identity_consistency_unknown, scene_topology_unknown, video_reference_safety_unknown]
+    exception_report: review/asset_review_exceptions.json
+    exception_resolution: review/asset_review_resolutions.json
+    forbid_full_batch_reinspection: true
   asset_image_naming:
     enabled: true
     scheme: "{project_code}_{asset_id}.png"
@@ -68,7 +76,7 @@ default_settings:
     enabled: true
     skill: deepwhite-n8n-asset-dispatcher
     schema_version: "2.1"
-    webhook_path: openclaw-continuity-assets
+    webhook_path: openclaw-assets
     shared_asset_root_env: OPENCLAW_ASSET_SHARED_ROOT
     default_shared_asset_root: /data/openclaw-assets
     accept_shared_root_from_payload: false
@@ -209,10 +217,14 @@ workflow:
     success_status: all_required_assets_approved
 
   stage_48_actual_asset_ingest:
-    name: Canonical Actual Asset Manifest
+    name: Deterministic Asset Evidence Ingest and Exception Triage
     inputs: [handoffs/scene_asset_handoff.json, assets/reference_registry.json, assets/expanded_asset_list.base.json, assets/expanded_asset_list.shot.json]
-    outputs: [assets/actual_asset_manifest.json, assets/observed_asset_state.json, assets/video_reference_manifest.json]
-    hard_gate: [every_required_asset_is_readable, every_required_asset_sha256_matches, all_video_references_are_clean_single_view]
+    runner: scripts/ingest_asset_evidence.py
+    runner_args: [--project-root, "projects/{project_id}"]
+    outputs: [assets/actual_asset_manifest.json, assets/observed_asset_state.json, assets/video_reference_manifest.json, gates/asset_evidence_gate.json, review/asset_review_exceptions.json]
+    agent_visual_review: only_assets_listed_in_review/asset_review_exceptions.json
+    rerun_after_exception_resolution: true
+    hard_gate: [asset_evidence_gate.passed == true, every_required_asset_is_readable, every_required_asset_sha256_matches, all_n8n_qa_evidence_valid, all_video_references_are_clean_single_view, manual_visual_review_required_count == 0]
     success_status: actual_assets_ready
 
   stage_50_final_shotlist:

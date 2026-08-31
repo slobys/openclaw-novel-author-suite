@@ -12,5 +12,6 @@ python3 -m unittest discover -s "${ROOT}/workspaces/novel-producer/tests" -p 'te
 python3 -m unittest discover -s "${ROOT}/workspaces/drama-producer/tests" -p 'test_*.py'
 python3 "${ROOT}/skills/deepwhite-scene-pack-builder/scripts/hardlock_selftest.py"
 bash "${ROOT}/tests/test-scene-pack.sh"
+node "${ROOT}/tests/test-n8n-workflow-contract.mjs"
 python3 "${ROOT}/scripts/check-public-release.py"
 bash "${ROOT}/tests/test-uninstall.sh"

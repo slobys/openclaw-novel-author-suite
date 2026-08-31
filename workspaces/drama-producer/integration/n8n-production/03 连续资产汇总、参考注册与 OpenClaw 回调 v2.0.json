@@ -1,0 +1,157 @@
+{
+  "name": "03 连续资产汇总、参考注册与 OpenClaw 回调 v2.0",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 连续资产汇总与参考注册 v2.0\n\n- 每轮扫描都会更新项目级 reference_registry.json\n- strict accepted 记为 approved，可直接作为参考锚点\n- accepted_fallback 记为 provisional；默认不能用于 approved_only 参考\n- failed 资产写入 Registry，但 reference_eligible=false\n- result_manifest.json 保留依赖、四锁、锚点角色与参考来源\n- 回调同时返回 reference_registry 路径和已批准参考数\n\n导入后默认停用。请先停用旧版03，再激活本工作流。\n- approved 条目必须保留 n8n 结构化 qa_evidence；Agent 默认只消费证据，不重复逐图语义审核。",
+        "height": 300,
+        "width": 720
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "122682bd-c154-4010-9e03-62f935f011f8",
+      "name": "汇总说明"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        48,
+        368
+      ],
+      "id": "29677fa1-de21-409b-ad39-54afcf434ac2",
+      "name": "每30秒汇总资产任务"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\n\nconst ROOT = path.resolve(String($env.OPENCLAW_ASSET_SHARED_ROOT || '/data/openclaw-assets'));\nconst MAX_ORPHAN_REPAIRS = 2;\nconst usableStatuses = new Set([\n  'accepted', 'accepted_fallback', 'accepted_fallback_unreviewed'\n]);\n\nfunction atomicJson(filePath, value) {\n  const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n  fs.renameSync(tmp, filePath);\n}\n\nfunction readJson(filePath) {\n  return JSON.parse(fs.readFileSync(filePath, 'utf8'));\n}\n\nfunction readDependencyStates(jobDir) {\n  const dir = path.join(jobDir, '_dependency_state');\n  if (!fs.existsSync(dir)) return [];\n  return fs.readdirSync(dir)\n    .filter((name) => name.endsWith('.json'))\n    .map((name) => {\n      try { return readJson(path.join(dir, name)); } catch { return null; }\n    })\n    .filter(Boolean);\n}\n\nfunction updateReferenceRegistry(projectDir, job, accepted, failed) {\n  const registryPath = path.join(projectDir, 'reference_registry.json');\n  let registry = {\n    schema_version: '2.1',\n    project_id: job.project_id,\n    updated_at: new Date().toISOString(),\n    assets: {}\n  };\n  if (fs.existsSync(registryPath)) {\n    try {\n      const existing = readJson(registryPath);\n      registry = {\n        ...registry,\n        ...existing,\n        assets: existing.assets ?? {}\n      };\n    } catch {}\n  }\n  const allowProvisional = job.reference_policy?.allow_provisional_references === true;\n  for (const item of accepted) {\n    const approved = item.final_status === 'accepted';\n    registry.assets[item.asset_id] = {\n      asset_id: item.asset_id,\n      parent_asset_id: item.parent_asset_id ?? null,\n      family_id: item.family_id ?? null,\n      asset_code: item.asset_code ?? null,\n      generation_stage: item.generation_stage ?? 'derived',\n      category: item.category,\n      name: item.name,\n      job_id: job.job_id,\n      filename: item.filename,\n      path: item.absolute_path,\n      relative_path: path.relative(projectDir, item.absolute_path),\n      final_status: item.final_status,\n      status: approved ? 'approved' : 'rejected',\n      registry_status: approved ? 'approved' : 'provisional',\n      reference_eligible: approved,\n      payload_sha256: job.payload_sha256 ?? item.payload_sha256 ?? null,\n      asset_role: item.asset_role ?? null,\n      asset_kind: item.asset_kind ?? null,\n      angle_id: item.angle_id ?? null,\n      layout_type: item.layout_type ?? null,\n      contains_multiple_independent_assets: item.contains_multiple_independent_assets === true,\n      aspect_ratio: item.aspect_ratio ?? null,\n      lock_id: item.lock_id ?? null,\n      lock_hash: item.lock_hash ?? null,\n      prompt_policy: item.prompt_policy ?? null,\n      anchor_roles: item.anchor_roles ?? [],\n      depends_on: item.depends_on ?? [],\n      reference_inputs: item.reference_inputs ?? [],\n      resolved_reference_inputs: item.resolved_reference_inputs ?? [],\n      sha256: item.sha256,\n      file_size: item.file_size,\n      qa_score: item.n8n_review_score,\n      qa_evidence: item.qa_evidence ?? null,\n      generation_provider: item.generation_provider ?? null,\n      provider_model: item.provider_model ?? null,\n      updated_at: new Date().toISOString()\n    };\n  }\n  for (const failure of failed) {\n    const asset = (job.assets ?? []).find((item) => item.asset_id === failure.asset_id) ?? {};\n    registry.assets[failure.asset_id] = {\n      ...(registry.assets[failure.asset_id] ?? {}),\n      asset_id: failure.asset_id,\n      parent_asset_id: asset.parent_asset_id ?? null,\n      family_id: asset.family_id ?? null,\n      asset_code: asset.asset_code ?? null,\n      generation_stage: asset.generation_stage ?? 'derived',\n      category: asset.category ?? 'other',\n      asset_role: asset.asset_role ?? null,\n      asset_kind: asset.asset_kind ?? null,\n      angle_id: asset.angle_id ?? null,\n      layout_type: asset.layout_type ?? null,\n      contains_multiple_independent_assets: asset.contains_multiple_independent_assets === true,\n      lock_id: asset.lock_id ?? null,\n      lock_hash: asset.lock_hash ?? null,\n      name: asset.name ?? failure.asset_id,\n      job_id: job.job_id,\n      final_status: failure.final_status ?? 'failed_unknown',\n      status: 'failed',\n      registry_status: 'failed',\n      payload_sha256: job.payload_sha256 ?? null,\n      reference_eligible: false,\n      final_reason: failure.final_reason ?? null,\n      updated_at: new Date().toISOString()\n    };\n  }\n  registry.schema_version = '2.1';\n  registry.updated_at = new Date().toISOString();\n  atomicJson(registryPath, registry);\n  return {\n    registryPath,\n    registryFilename: 'reference_registry.json',\n    approved_count: Object.values(registry.assets).filter((item) => (item.status ?? item.registry_status) === 'approved').length,\n    provisional_count: Object.values(registry.assets).filter((item) => item.registry_status === 'provisional').length,\n    failed_count: Object.values(registry.assets).filter((item) => (item.status ?? item.registry_status) === 'failed').length\n  };\n}\n\nfunction sha256(filePath) {\n  const hash = crypto\n    .createHash('sha256')\n    .update(fs.readFileSync(filePath))\n    .digest('hex');\n  return `sha256:${hash}`;\n}\n\nfunction countJson(dir) {\n  return fs.existsSync(dir)\n    ? fs.readdirSync(dir).filter((name) => name.endsWith('.json')).length\n    : 0;\n}\n\nfunction taskMatches(filePath, assetId) {\n  try {\n    return readJson(filePath).asset_id === assetId;\n  } catch {\n    return false;\n  }\n}\n\nfunction hasRunningAsset(jobDir, assetId) {\n  const runningDir = path.join(jobDir, '_running');\n  if (!fs.existsSync(runningDir)) return false;\n  return fs.readdirSync(runningDir)\n    .filter((name) => name.endsWith('.json'))\n    .some((name) => taskMatches(path.join(runningDir, name), assetId));\n}\n\nfunction createFreshTask(jobDir, job, asset, repairCount) {\n  return {\n    schema_version: '3.0',\n    project_id: job.project_id,\n    job_id: job.job_id,\n    output_dir: jobDir,\n    ...asset,\n    retry_count: 0,\n    image_generation_count: 0,\n    review_retry_count: 0,\n    review_api_retry_count: 0,\n    review_api_max_retries: 3,\n    qa_feedback: '',\n    review_history: [],\n    worker_execution_count: 0,\n    orphan_repair_count: repairCount,\n    not_before: 0,\n    queued_at: new Date().toISOString(),\n  };\n}\n\nfunction repairMissingAsset(jobDir, job, asset) {\n  const assetId = asset.asset_id;\n  const queueDir = path.join(jobDir, '_queue');\n  const runningDir = path.join(jobDir, '_running');\n  const doneDir = path.join(jobDir, '_queue_done');\n  const repairDir = path.join(jobDir, '_repair');\n  fs.mkdirSync(queueDir, { recursive: true });\n  fs.mkdirSync(runningDir, { recursive: true });\n  fs.mkdirSync(doneDir, { recursive: true });\n  fs.mkdirSync(repairDir, { recursive: true });\n\n  const queuePath = path.join(queueDir, `${assetId}.json`);\n  if (fs.existsSync(queuePath) || hasRunningAsset(jobDir, assetId)) {\n    return { repaired: false, reason: 'already_queued_or_running' };\n  }\n\n  const repairPath = path.join(repairDir, `${assetId}.json`);\n  const repairState = fs.existsSync(repairPath)\n    ? readJson(repairPath)\n    : { count: 0, history: [] };\n  const count = Number(repairState.count ?? 0);\n  if (count >= MAX_ORPHAN_REPAIRS) {\n    return { repaired: false, reason: 'repair_budget_exhausted' };\n  }\n\n  const nextCount = count + 1;\n  const donePath = path.join(doneDir, `${assetId}.json`);\n  let task;\n  let source;\n  if (fs.existsSync(donePath)) {\n    try {\n      task = readJson(donePath);\n      source = 'queue_done';\n    } catch {\n      task = null;\n    }\n  }\n  if (!task) {\n    task = createFreshTask(jobDir, job, asset, nextCount);\n    source = 'job_json';\n  }\n\n  task.not_before = 0;\n  task.lease_id = null;\n  task.running_task_path = null;\n  task.orphan_repair_count = nextCount;\n  task.orphan_repaired_at = new Date().toISOString();\n\n  if (fs.existsSync(donePath)) {\n    atomicJson(donePath, task);\n    fs.renameSync(donePath, queuePath);\n  } else {\n    atomicJson(queuePath, task);\n  }\n\n  const event = {\n    count: nextCount,\n    source,\n    repaired_at: new Date().toISOString(),\n  };\n  atomicJson(repairPath, {\n    asset_id: assetId,\n    count: nextCount,\n    max_repairs: MAX_ORPHAN_REPAIRS,\n    history: [...(repairState.history ?? []), event].slice(-10),\n  });\n  return { repaired: true, reason: source, count: nextCount };\n}\n\nfunction acquireCallback(jobDir) {\n  const sentPath = path.join(jobDir, '.callback_sent');\n  if (fs.existsSync(sentPath)) return false;\n  const inflightPath = path.join(jobDir, '.callback_inflight');\n  if (fs.existsSync(inflightPath)) {\n    const age = Date.now() - fs.statSync(inflightPath).mtimeMs;\n    if (age < 5 * 60 * 1000) return false;\n    const logDir = path.join(jobDir, '_logs');\n    fs.mkdirSync(logDir, { recursive: true });\n    fs.renameSync(\n      inflightPath,\n      path.join(logDir, `callback_inflight_stale_${Date.now()}.json`)\n    );\n  }\n  try {\n    const fd = fs.openSync(inflightPath, 'wx');\n    fs.writeFileSync(fd, JSON.stringify({ acquired_at: new Date().toISOString() }));\n    fs.closeSync(fd);\n    return true;\n  } catch {\n    return false;\n  }\n}\n\nconst output = [];\nif (!fs.existsSync(ROOT)) return output;\n\nfor (const project of fs.readdirSync(ROOT, { withFileTypes: true })) {\n  if (!project.isDirectory()) continue;\n  const projectDir = path.join(ROOT, project.name);\n\n  for (const jobEntry of fs.readdirSync(projectDir, { withFileTypes: true })) {\n    if (!jobEntry.isDirectory()) continue;\n    const jobDir = path.join(projectDir, jobEntry.name);\n    const jobPath = path.join(jobDir, 'job.json');\n    if (!fs.existsSync(jobPath)) continue;\n\n    let job;\n    try {\n      job = readJson(jobPath);\n    } catch {\n      continue;\n    }\n\n    const donePath = path.join(jobDir, '.done');\n    const manifestPath = path.join(jobDir, 'result_manifest.json');\n    const callbackSentPath = path.join(jobDir, '.callback_sent');\n    if (\n      fs.existsSync(callbackSentPath) &&\n      (fs.existsSync(donePath) || fs.existsSync(path.join(jobDir, '.failed'))) &&\n      fs.existsSync(manifestPath)\n    ) {\n      continue;\n    }\n\n    // partial 只记录进度，不再阻止终态失败回调。\n    const accepted = [];\n    const failed = [];\n    const missing = [];\n    const statusDir = path.join(jobDir, '_status');\n\n    for (const asset of job.assets ?? []) {\n      const statusPath = path.join(statusDir, `${asset.asset_id}.json`);\n      if (!fs.existsSync(statusPath)) {\n        missing.push(asset.asset_id);\n        continue;\n      }\n\n      let record;\n      try {\n        record = readJson(statusPath);\n      } catch (error) {\n        failed.push({\n          asset_id: asset.asset_id,\n          final_status: 'failed_invalid_status_file',\n          final_reason: error.message,\n        });\n        continue;\n      }\n\n      if (!usableStatuses.has(record.final_status)) {\n        failed.push({\n          asset_id: asset.asset_id,\n          filename: asset.filename,\n          final_status: record.final_status ?? 'failed_unknown',\n          final_reason: record.final_reason ?? '资产没有可用图片',\n        });\n        continue;\n      }\n\n      const imagePath = path.resolve(jobDir, asset.filename);\n      const safeAssetsRoot = path.resolve(jobDir) + path.sep;\n      if (!imagePath.startsWith(safeAssetsRoot) || !fs.existsSync(imagePath)) {\n        failed.push({\n          asset_id: asset.asset_id,\n          filename: asset.filename,\n          final_status: 'failed_missing_final_image',\n          final_reason: '状态记录存在，但正式图片不存在',\n        });\n        continue;\n      }\n\n      const stat = fs.statSync(imagePath);\n      if (!stat.isFile() || stat.size <= 0) {\n        failed.push({\n          asset_id: asset.asset_id,\n          filename: asset.filename,\n          final_status: 'failed_invalid_final_image',\n          final_reason: '正式图片为空或不是普通文件',\n        });\n        continue;\n      }\n\n      const hash = sha256(imagePath);\n      if (record.sha256 && record.sha256 !== hash && `sha256:${record.sha256}` !== hash) {\n        failed.push({\n          asset_id: asset.asset_id,\n          filename: asset.filename,\n          final_status: 'failed_final_image_hash_mismatch',\n          final_reason: '正式图片 SHA256 与状态记录不一致',\n        });\n        continue;\n      }\n\n      accepted.push({\n        asset_id: asset.asset_id,\n        parent_asset_id: asset.parent_asset_id ?? null,\n        family_id: asset.family_id ?? null,\n        asset_code: asset.asset_code ?? null,\n        generation_stage: asset.generation_stage ?? 'derived',\n        category: asset.category,\n        payload_sha256: job.payload_sha256 ?? asset.payload_sha256 ?? null,\n        asset_role: asset.asset_role ?? null,\n        asset_kind: asset.asset_kind ?? null,\n        angle_id: asset.angle_id ?? null,\n        layout_type: asset.layout_type ?? null,\n        contains_multiple_independent_assets: asset.contains_multiple_independent_assets === true,\n        name: asset.name,\n        filename: asset.filename,\n        relative_path: asset.filename,\n        absolute_path: imagePath,\n        aspect_ratio: asset.aspect_ratio ?? null,\n        lock_id: asset.lock_id ?? null,\n        lock_hash: asset.lock_hash ?? null,\n        prompt_policy: asset.prompt_policy ?? null,\n        anchor_roles: asset.anchor_roles ?? [],\n        depends_on: asset.depends_on ?? [],\n        reference_inputs: asset.reference_inputs ?? [],\n        reference_images: record.reference_images ?? asset.reference_images ?? [],\n        resolved_reference_inputs: record.resolved_reference_inputs ?? [],\n        file_size: stat.size,\n        sha256: hash,\n        n8n_review_score:\n          record.review_score !== null &&\n          record.review_score !== undefined &&\n          Number.isFinite(Number(record.review_score))\n            ? Number(record.review_score)\n            : null,\n        qa_evidence: record.qa_evidence ?? null,\n        image_generation_count: Number(record.image_generation_count ?? 0),\n        final_status: record.final_status,\n        acceptance_mode: record.acceptance_mode ?? null,\n        fallback_reason: record.fallback_reason ?? null,\n        model_route_profile: record.model_route_profile ?? job.model_routing?.active_profile ?? null,\n        selected_route_id: record.selected_route_id ?? null,\n        generation_provider: record.generation_provider ?? null,\n        provider_model: record.provider_model ?? null,\n        provider_cost_tier: record.provider_cost_tier ?? null,\n        review_slot_id: record.review_slot_id ?? null,\n        review_provider: record.review_provider ?? job.review_routing?.provider ?? null,\n        review_model: record.review_model ?? job.review_routing?.model ?? null,\n      });\n    }\n\n    const dependencyStates = readDependencyStates(jobDir);\n    let registryInfo = updateReferenceRegistry(projectDir, job, accepted, failed);\n\n    const autoRepairedAssets = [];\n    for (const assetId of missing) {\n      const asset = (job.assets ?? []).find((item) => item.asset_id === assetId);\n      if (!asset) continue;\n      const result = repairMissingAsset(jobDir, job, asset);\n      if (result.repaired) {\n        autoRepairedAssets.push({ asset_id: assetId, ...result });\n      }\n    }\n\nconst queueCount = countJson(path.join(jobDir, '_queue'));\n    const runningCount = countJson(path.join(jobDir, '_running'));\n    const strictAccepted = accepted.filter((item) => item.final_status === 'accepted');\n    const fallbackAccepted = accepted.filter((item) => item.final_status !== 'accepted');\n    const strictCount = strictAccepted.length;\n    const fallbackCount = fallbackAccepted.length;\n    const complete =\n      strictCount === Number(job.expected_count) &&\n      fallbackCount === 0 &&\n      failed.length === 0 &&\n      missing.length === 0;\n    const terminalFailure =\n      !complete &&\n      autoRepairedAssets.length === 0 &&\n      queueCount === 0 &&\n      runningCount === 0 &&\n      (fallbackCount > 0 || failed.length > 0 || missing.length > 0);\n    const now = new Date().toISOString();\n    const fallbackFailures = fallbackAccepted.map((item) => ({\n      asset_id: item.asset_id,\n      filename: item.filename,\n      final_status: item.final_status,\n      final_reason: item.fallback_reason || '资产只有临时候选，没有通过严格质检'\n    }));\nconst terminalFailures = [...failed, ...fallbackFailures];\n    const missingFailures = terminalFailure\n      ? missing.map((assetId) => ({\n          asset_id: assetId,\n          final_status: 'failed_missing_status_after_repair',\n          final_reason: '缺少资产状态且孤儿自动修复预算已耗尽'\n        }))\n      : [];\n    if (missingFailures.length > 0) {\n      terminalFailures.push(...missingFailures);\n      registryInfo = updateReferenceRegistry(projectDir, job, accepted, [...failed, ...missingFailures]);\n    }\n\n    const progress = {\n      schema_version: '3.1',\n      project_id: job.project_id,\n      job_id: job.job_id,\n      payload_sha256: job.payload_sha256 ?? null,\n      status: complete ? 'completed' : terminalFailure ? 'failed' : 'processing',\n      expected_count: Number(job.expected_count),\n      accepted_count: accepted.length,\n      strict_accepted_count: strictCount,\n      fallback_count: fallbackCount,\n      failed_count: terminalFailures.length,\n      missing_count: missing.length,\n      queued_count: queueCount,\n      running_count: runningCount,\n      all_required_assets_approved: complete,\n      dependency_waiting_count: dependencyStates.filter((item) => item.state === 'waiting').length,\n      dependency_failed_count: dependencyStates.filter((item) => item.state === 'failed').length,\n      dependency_states: dependencyStates,\n      reference_registry_path: registryInfo.registryPath,\n      reference_registry_summary: registryInfo,\n      missing_assets: missing,\n      failed_assets: terminalFailures,\n      auto_repaired_assets: autoRepairedAssets,\n      updated_at: now,\n    };\n    atomicJson(path.join(jobDir, 'progress.json'), progress);\n\n    if (autoRepairedAssets.length > 0) {\n      const partialPath = path.join(jobDir, '.partial');\n      if (fs.existsSync(partialPath)) fs.unlinkSync(partialPath);\n      continue;\n    }\n\n    if (!complete && !terminalFailure) {\n      atomicJson(path.join(jobDir, '.partial'), {\n        ...progress,\n        status: 'processing',\n        reason: '任务仍在队列、运行中或等待依赖',\n      });\n      continue;\n    }\n\n    const finalStatus = complete ? 'completed' : 'failed';\n    const manifest = {\n      schema_version: '3.1',\n      project_id: job.project_id,\n      job_id: job.job_id,\n      payload_sha256: job.payload_sha256 ?? null,\n      status: finalStatus,\n      created_at: now,\n      expected_count: Number(job.expected_count),\n      accepted_count: accepted.length,\n      strict_accepted_count: strictCount,\n      fallback_count: fallbackCount,\n      failed_count: terminalFailures.length,\n      missing_count: missing.length,\n      all_assets_complete: complete,\n      all_required_assets_approved: complete,\n      failure_reason: complete ? null : 'required_assets_not_strictly_approved',\n      dependency_graph_filename: 'asset_dependency_graph.json',\n      reference_plan_filename: 'reference_plan.json',\n      reference_registry_filename: '../reference_registry.json',\n      reference_registry_path: registryInfo.registryPath,\n      reference_registry_summary: registryInfo,\n      model_route_profile: job.model_routing?.active_profile ?? null,\n      review_routing: job.review_routing ?? null,\n      review_provider_summary: accepted.reduce((summary, item) => {\n        const key = `${item.review_provider || 'unknown'}::${item.review_model || 'unknown'}`;\n        summary[key] = (summary[key] ?? 0) + 1;\n        return summary;\n      }, {}),\n      provider_summary: accepted.reduce((summary, item) => {\n        const key = `${item.generation_provider || 'unknown'}::${item.provider_model || 'unknown'}`;\n        summary[key] = (summary[key] ?? 0) + 1;\n        return summary;\n      }, {}),\n      assets: accepted,\n      failed_assets: terminalFailures,\n      missing_assets: missing,\n    };\n    atomicJson(manifestPath, manifest);\n    const markerPath = path.join(jobDir, complete ? '.done' : '.failed');\n    atomicJson(markerPath, {\n      schema_version: '3.1',\n      project_id: job.project_id,\n      job_id: job.job_id,\n      payload_sha256: job.payload_sha256 ?? null,\n      status: finalStatus,\n      expected_count: Number(job.expected_count),\n      accepted_count: accepted.length,\n      strict_accepted_count: strictCount,\n      fallback_count: fallbackCount,\n      failed_count: terminalFailures.length,\n      missing_count: missing.length,\n      all_required_assets_approved: complete,\n      manifest: 'result_manifest.json',\n      reference_registry: '../reference_registry.json',\n      reference_registry_path: registryInfo.registryPath,\n      completed_at: now,\n    });\n    const partialPath = path.join(jobDir, '.partial');\n    if (fs.existsSync(partialPath)) fs.unlinkSync(partialPath);\n\n    if (!acquireCallback(jobDir)) continue;\n    output.push({\n      json: {\n        event: complete ? 'n8n_asset_generation_completed' : 'n8n_asset_generation_failed',\n        continuity_mode: true,\n        project_id: job.project_id,\n        job_id: job.job_id,\n        payload_sha256: job.payload_sha256 ?? null,\n        status: finalStatus,\n        expected_count: Number(job.expected_count),\n        accepted_count: accepted.length,\n        strict_accepted_count: strictCount,\n        fallback_count: fallbackCount,\n        failed_count: terminalFailures.length,\n        missing_count: missing.length,\n        all_assets_complete: complete,\n        all_required_assets_approved: complete,\n        failure_reason: complete ? null : 'required_assets_not_strictly_approved',\n        failed_assets: terminalFailures,\n        missing_assets: missing,\n        manifest_filename: 'result_manifest.json',\n        marker_filename: complete ? '.done' : '.failed',\n        reference_registry_filename: '../reference_registry.json',\n        reference_registry_path: registryInfo.registryPath,\n        approved_reference_count: registryInfo.approved_count,\n        provisional_reference_count: registryInfo.provisional_count,\n        _internal_job_dir: jobDir,\n      }\n    });\n  }\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        368
+      ],
+      "id": "00c9e0a3-d6fe-4afc-8ef6-d79f23cdd6e8",
+      "name": "扫描任务并生成完成清单"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPENCLAW_ASSET_CALLBACK_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  event: $json.event,\n  continuity_mode: $json.continuity_mode,\n  project_id: $json.project_id,\n  job_id: $json.job_id,\n  payload_sha256: $json.payload_sha256,\n  status: $json.status,\n  expected_count: $json.expected_count,\n  accepted_count: $json.accepted_count,\n  strict_accepted_count: $json.strict_accepted_count,\n  fallback_count: $json.fallback_count,\n  failed_count: $json.failed_count,\n  missing_count: $json.missing_count,\n  all_assets_complete: $json.all_assets_complete,\n  all_required_assets_approved: $json.all_required_assets_approved,\n  failure_reason: $json.failure_reason,\n  failed_assets: $json.failed_assets,\n  missing_assets: $json.missing_assets,\n  manifest_filename: $json.manifest_filename,\n  marker_filename: $json.marker_filename,\n  reference_registry_filename: $json.reference_registry_filename,\n  reference_registry_path: $json.reference_registry_path,\n  approved_reference_count: $json.approved_reference_count,\n  provisional_reference_count: $json.provisional_reference_count\n} }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        608,
+        368
+      ],
+      "id": "738bffdb-b2d1-4f7c-8a18-33ae2c991b08",
+      "name": "回调 OpenClaw",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "k4Rvwtf7Xd0gKVl1",
+          "name": "OpenClaw Asset Hook"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n  const path = require('path');\n\n  const source = $('扫描任务并生成完成清单').item.json;\n  const jobDir = source._internal_job_dir;\n  const inflightPath = path.join(jobDir, '.callback_inflight');\n  const statusCode = Number($json.statusCode ?? 0);\n  const successful = statusCode >= 200 && statusCode < 300 && !$json.error;\n\n  function atomicJson(filePath, value) {\n    const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n    fs.renameSync(tmp, filePath);\n  }\n\n  const result = {\n    project_id: source.project_id,\n    job_id: source.job_id,\n    status_code: statusCode,\n    successful,\n    response: $json.body ?? $json.data ?? null,\n    error: $json.error ?? null,\n    attempted_at: new Date().toISOString(),\n  };\n\n  if (successful) {\n    atomicJson(path.join(jobDir, '.callback_sent'), result);\n    const errorPath = path.join(jobDir, '.callback_error.json');\n    if (fs.existsSync(errorPath)) fs.unlinkSync(errorPath);\n  } else {\n    atomicJson(path.join(jobDir, '.callback_error.json'), result);\n  }\n\n  if (fs.existsSync(inflightPath)) fs.unlinkSync(inflightPath);\n\n  return [{\n    json: {\n      event: successful\n        ? 'openclaw_callback_sent'\n        : 'openclaw_callback_failed_will_retry',\n      project_id: source.project_id,\n      job_id: source.job_id,\n      status_code: statusCode,\n      successful,\n    }\n  }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        368
+      ],
+      "id": "bba94b8d-ba72-409c-b776-5f440ddd714d",
+      "name": "记录 OpenClaw 回调结果"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "每30秒汇总资产任务": {
+      "main": [
+        [
+          {
+            "node": "扫描任务并生成完成清单",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "扫描任务并生成完成清单": {
+      "main": [
+        [
+          {
+            "node": "回调 OpenClaw",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "回调 OpenClaw": {
+      "main": [
+        [
+          {
+            "node": "记录 OpenClaw 回调结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "nodeGroups": [],
+  "tags": []
+}

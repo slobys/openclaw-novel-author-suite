@@ -1,0 +1,2380 @@
+{
+  "name": "02 连续资产 Worker（依赖门禁+参考图注入 3并发 v2.0）",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 连续资产 Worker v2.0（3并发槽位）\n\n新增能力：\n- 领取任务前检查 depends_on 和 reference_inputs\n- 同任务依赖从 _status 读取，跨任务依赖从项目级 reference_registry.json 读取\n- 仅当必需依赖与参考图满足时才生成\n- 依赖失败会写入 failed_dependency，不会无限等待\n- 参考图会实际注入 OpenAI Images Edit 槽位 C\n- 质检会同时看到待审图和参考图，检查人物/场景/道具连续性\n- 锚点优先于派生资产，派生资产优先于镜头资产\n\n当前真实参考图输入仅实现于槽位 C，最多2张。\n- n8n 是逐图语义质检唯一权威；通过结果会把 production_safety 与 qa_evidence 固化进 Registry，供 Agent 免重复看图。",
+        "height": 360,
+        "width": 980
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "e14c4242-1b03-4c4a-9a91-58548d4d7ea4",
+      "name": "Worker说明"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        32,
+        1840
+      ],
+      "id": "15cf6773-4451-49b0-a7a6-7b1a3bbbb62b",
+      "name": "每30秒检查一个资产任务"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\n\nconst ROOT = path.resolve(String($env.OPENCLAW_ASSET_SHARED_ROOT || '/data/openclaw-assets'));\nconst SLOT_DIR = path.join(ROOT, '_worker_slots');\nconst MAX_WORKER_SLOTS = 3;\nconst DEFAULT_LEASE_MS = 30 * 60 * 1000;\nconst usableStatuses = new Set(['accepted', 'accepted_fallback', 'accepted_fallback_unreviewed']);\nconst strictApprovedStatuses = new Set(['accepted']);\nconst terminalFailurePrefix = 'failed_';\n\nfs.mkdirSync(SLOT_DIR, { recursive: true });\n\nfunction readJson(filePath) {\n  return JSON.parse(fs.readFileSync(filePath, 'utf8'));\n}\nfunction atomicJson(filePath, value) {\n  const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n  fs.renameSync(tmp, filePath);\n}\nfunction sha256(filePath) {\n  return `sha256:${crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')}`;\n}\nfunction safeAssetId(value) {\n  return String(value ?? 'asset').normalize('NFKC')\n    .replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'asset';\n}\nfunction releaseSlot(slotPath, leaseId) {\n  if (!slotPath || !fs.existsSync(slotPath)) return;\n  try {\n    const slot = readJson(slotPath);\n    if (leaseId && slot.lease_id && slot.lease_id !== leaseId) return;\n    fs.unlinkSync(slotPath);\n  } catch {}\n}\nfunction reclaimExpiredSlots(now) {\n  for (let slotId = 1; slotId <= MAX_WORKER_SLOTS; slotId += 1) {\n    const slotPath = path.join(SLOT_DIR, `slot-${slotId}.json`);\n    if (!fs.existsSync(slotPath)) continue;\n    try {\n      const slot = readJson(slotPath);\n      const expiresAt = Date.parse(String(slot.expires_at ?? ''));\n      if (Number.isFinite(expiresAt) && expiresAt > now) continue;\n      fs.renameSync(slotPath, path.join(SLOT_DIR, `expired-slot-${slotId}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`));\n    } catch {}\n  }\n}\nfunction acquireSlot(now) {\n  reclaimExpiredSlots(now);\n  for (let slotId = 1; slotId <= MAX_WORKER_SLOTS; slotId += 1) {\n    const slotPath = path.join(SLOT_DIR, `slot-${slotId}.json`);\n    const leaseId = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');\n    const record = {\n      schema_version: '3.0', slot_id: slotId, lease_id: leaseId, state: 'reserved',\n      acquired_at: new Date(now).toISOString(),\n      expires_at: new Date(now + DEFAULT_LEASE_MS).toISOString()\n    };\n    let fd;\n    try {\n      fd = fs.openSync(slotPath, 'wx', 0o600);\n      fs.writeFileSync(fd, JSON.stringify(record, null, 2), 'utf8');\n      fs.closeSync(fd);\n      return { slotId, slotPath, leaseId, expiresAt: record.expires_at };\n    } catch {\n      if (fd !== undefined) try { fs.closeSync(fd); } catch {}\n    }\n  }\n  return null;\n}\nfunction listJobDirs() {\n  if (!fs.existsSync(ROOT)) return [];\n  const jobs = [];\n  for (const project of fs.readdirSync(ROOT, { withFileTypes: true })) {\n    if (!project.isDirectory() || project.name.startsWith('_')) continue;\n    const projectDir = path.join(ROOT, project.name);\n    for (const job of fs.readdirSync(projectDir, { withFileTypes: true })) {\n      if (!job.isDirectory()) continue;\n      const jobDir = path.join(projectDir, job.name);\n      if (fs.existsSync(path.join(jobDir, 'job.json'))) jobs.push(jobDir);\n    }\n  }\n  return jobs;\n}\nfunction reusableStatus(jobDir, assetId, expectedFilename) {\n  const statusPath = path.join(jobDir, '_status', `${assetId}.json`);\n  if (!fs.existsSync(statusPath)) return null;\n  try {\n    const record = readJson(statusPath);\n    if (!usableStatuses.has(record.final_status)) return null;\n    if (record.asset_id !== assetId || record.filename !== expectedFilename) return null;\n    const imagePath = path.resolve(jobDir, expectedFilename);\n    const safeRoot = path.resolve(jobDir) + path.sep;\n    if (!imagePath.startsWith(safeRoot) || !fs.existsSync(imagePath)) return null;\n    const stat = fs.statSync(imagePath);\n    if (!stat.isFile() || stat.size <= 0) return null;\n    const hash = sha256(imagePath);\n    if (record.sha256 && record.sha256 !== hash && `sha256:${record.sha256}` !== hash) return null;\n    return { ...record, path: imagePath, file_size: stat.size, sha256: hash };\n  } catch {\n    return null;\n  }\n}\nfunction archiveCollision(jobDir, runningPath, task, reason) {\n  const logsDir = path.join(jobDir, '_logs');\n  fs.mkdirSync(logsDir, { recursive: true });\n  const assetId = safeAssetId(task.asset_id);\n  const archivedPath = path.join(logsDir, `orphan_${assetId}_${Date.now()}_${Math.random().toString(16).slice(2)}.json`);\n  task.orphan_archive_reason = reason;\n  task.orphan_archived_at = new Date().toISOString();\n  atomicJson(runningPath, task);\n  fs.renameSync(runningPath, archivedPath);\n}\nfunction validateReferencePath(rawPath) {\n  const resolved = path.resolve(String(rawPath ?? '').trim());\n  const safeRoot = path.resolve(ROOT) + path.sep;\n  if (!resolved.startsWith(safeRoot)) throw new Error(`参考图超出固定资产根目录：${resolved}`);\n  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) throw new Error(`参考图不存在：${resolved}`);\n  const extension = path.extname(resolved).toLowerCase();\n  if (!['.png', '.jpg', '.jpeg', '.webp'].includes(extension)) throw new Error(`参考图格式不支持：${extension}`);\n  return resolved;\n}\nfunction readProjectRegistry(jobDir) {\n  const registryPath = path.join(path.dirname(jobDir), 'reference_registry.json');\n  if (!fs.existsSync(registryPath)) return { registryPath, assets: {} };\n  try {\n    const registry = readJson(registryPath);\n    return { registryPath, assets: registry.assets ?? {} };\n  } catch {\n    return { registryPath, assets: {} };\n  }\n}\nfunction resolveAssetRecord(jobDir, assetId, registryAssets) {\n  const statusPath = path.join(jobDir, '_status', `${assetId}.json`);\n  if (fs.existsSync(statusPath)) {\n    try {\n      const status = readJson(statusPath);\n      if (usableStatuses.has(status.final_status)) {\n        const imagePath = path.resolve(jobDir, status.filename);\n        if (fs.existsSync(imagePath) && fs.statSync(imagePath).isFile() && fs.statSync(imagePath).size > 0) {\n          return {\n            asset_id: assetId,\n            source: 'same_job_status',\n            path: imagePath,\n            final_status: status.final_status,\n            registry_status: strictApprovedStatuses.has(status.final_status) ? 'approved' : 'provisional',\n            reference_eligible: true,\n            sha256: status.sha256 ?? null,\n            record: status\n          };\n        }\n      }\n      if (String(status.final_status ?? '').startsWith(terminalFailurePrefix)) {\n        return { asset_id: assetId, source: 'same_job_status', terminal_failure: true, final_status: status.final_status, record: status };\n      }\n    } catch {}\n  }\n  const registry = registryAssets[assetId];\n  if (!registry) return null;\n  const registryStatus = registry.status ?? registry.registry_status;\n  if (['rejected', 'failed', 'superseded'].includes(registryStatus) || String(registry.final_status ?? '').startsWith(terminalFailurePrefix)) {\n    return { asset_id: assetId, source: 'project_registry', terminal_failure: true, ...registry };\n  }\n  const candidatePath = String(registry.path ?? '').trim();\n  if (!candidatePath || !fs.existsSync(candidatePath) || !fs.statSync(candidatePath).isFile()) return null;\n  return { asset_id: assetId, source: 'project_registry', ...registry, path: candidatePath };\n}\nfunction writeDependencyState(jobDir, assetId, value) {\n  const dir = path.join(jobDir, '_dependency_state');\n  fs.mkdirSync(dir, { recursive: true });\n  atomicJson(path.join(dir, `${assetId}.json`), {\n    schema_version: '1.0', asset_id: assetId, checked_at: new Date().toISOString(), ...value\n  });\n}\nfunction clearDependencyState(jobDir, assetId) {\n  const statePath = path.join(jobDir, '_dependency_state', `${assetId}.json`);\n  if (fs.existsSync(statePath)) fs.unlinkSync(statePath);\n}\nfunction resolveTaskReadiness(jobDir, task) {\n  const { registryPath, assets: registryAssets } = readProjectRegistry(jobDir);\n  const waiting = [];\n  const failures = [];\n  const dependencyRecords = [];\n  for (const dependencyId of Array.isArray(task.depends_on) ? task.depends_on : []) {\n    const record = resolveAssetRecord(jobDir, dependencyId, registryAssets);\n    if (!record) {\n      waiting.push({ type: 'dependency', asset_id: dependencyId, reason: 'not_completed' });\n      continue;\n    }\n    if (record.terminal_failure) {\n      failures.push({ type: 'dependency', asset_id: dependencyId, reason: record.final_status ?? 'failed' });\n      continue;\n    }\n    dependencyRecords.push(record);\n  }\n  if (failures.length) return { state: 'failed', registry_path: registryPath, failures, waiting };\n\n  const directPaths = [];\n  const resolvedInputs = [];\n  const omittedInputs = [];\n  for (const rawPath of Array.isArray(task.reference_images) ? task.reference_images : []) {\n    try {\n      const resolved = validateReferencePath(rawPath);\n      if (!directPaths.includes(resolved)) directPaths.push(resolved);\n      resolvedInputs.push({ path: resolved, role: 'direct_reference', required: true, approved_only: false, source: 'direct_path' });\n    } catch (error) {\n      failures.push({ type: 'reference_path', path: rawPath, reason: error.message });\n    }\n  }\n\n  const referenceInputs = Array.isArray(task.reference_inputs) ? task.reference_inputs : [];\n  for (const input of referenceInputs) {\n    if (input.path) {\n      try {\n        const resolved = validateReferencePath(input.path);\n        if (!directPaths.includes(resolved)) directPaths.push(resolved);\n        resolvedInputs.push({ ...input, path: resolved, source: 'direct_path' });\n      } catch (error) {\n        if (input.required !== false) failures.push({ type: 'reference_path', path: input.path, reason: error.message });\n        else omittedInputs.push({ ...input, reason: error.message });\n      }\n      continue;\n    }\n    const record = resolveAssetRecord(jobDir, input.asset_id, registryAssets);\n    if (!record) {\n      if (input.required !== false) waiting.push({ type: 'reference_asset', asset_id: input.asset_id, reason: 'not_available' });\n      else omittedInputs.push({ ...input, reason: 'not_available' });\n      continue;\n    }\n    if (record.terminal_failure) {\n      if (input.required !== false) failures.push({ type: 'reference_asset', asset_id: input.asset_id, reason: record.final_status ?? 'failed' });\n      else omittedInputs.push({ ...input, reason: record.final_status ?? 'failed' });\n      continue;\n    }\n    const approved = (record.status ?? record.registry_status) === 'approved' || strictApprovedStatuses.has(record.final_status);\n    const allowProvisional = task.allow_provisional_references === true;\n    if (input.approved_only !== false && !approved && !allowProvisional) {\n      if (input.required !== false) waiting.push({ type: 'reference_asset', asset_id: input.asset_id, reason: 'not_approved' });\n      else omittedInputs.push({ ...input, reason: 'not_approved' });\n      continue;\n    }\n    const resolved = validateReferencePath(record.path);\n    if (!directPaths.includes(resolved)) directPaths.push(resolved);\n    resolvedInputs.push({\n      ...input,\n      path: resolved,\n      source: record.source,\n      source_status: record.registry_status ?? record.final_status ?? null,\n      sha256: record.sha256 ?? null\n    });\n  }\n  if (failures.length) return { state: 'failed', registry_path: registryPath, failures, waiting, resolved_reference_inputs: resolvedInputs };\n  if (waiting.length) return { state: 'waiting', registry_path: registryPath, waiting, resolved_reference_inputs: resolvedInputs, omitted_reference_inputs: omittedInputs };\n\n  const maximum = Math.max(1, Number(task.max_reference_images ?? 2));\n  const sortedInputs = resolvedInputs.sort((a, b) => {\n    const requiredA = a.required === false ? 1 : 0;\n    const requiredB = b.required === false ? 1 : 0;\n    return requiredA - requiredB || Number(a.priority ?? 999) - Number(b.priority ?? 999);\n  });\n  const requiredPaths = [...new Set(sortedInputs.filter((item) => item.required !== false).map((item) => item.path))];\n  if (requiredPaths.length > maximum) {\n    return {\n      state: 'failed', registry_path: registryPath,\n      failures: [{ type: 'reference_limit', reason: `必需参考图 ${requiredPaths.length} 张，超过当前上限 ${maximum} 张` }],\n      resolved_reference_inputs: sortedInputs\n    };\n  }\n  const selectedInputs = [];\n  const selectedPaths = [];\n  for (const input of sortedInputs) {\n    if (selectedPaths.includes(input.path)) continue;\n    if (selectedPaths.length >= maximum) {\n      omittedInputs.push({ ...input, reason: 'maximum_reference_images_reached' });\n      continue;\n    }\n    selectedPaths.push(input.path);\n    selectedInputs.push(input);\n  }\n  return {\n    state: 'ready', registry_path: registryPath,\n    dependency_records: dependencyRecords,\n    reference_images: selectedPaths,\n    resolved_reference_inputs: selectedInputs,\n    omitted_reference_inputs: omittedInputs\n  };\n}\nfunction markDependencyFailure(jobDir, queuePath, task, readiness) {\n  const statusDir = path.join(jobDir, '_status');\n  const doneDir = path.join(jobDir, '_queue_done');\n  fs.mkdirSync(statusDir, { recursive: true });\n  fs.mkdirSync(doneDir, { recursive: true });\n  const record = {\n    schema_version: '3.0', project_id: task.project_id, job_id: task.job_id,\n    asset_id: task.asset_id, category: task.category, name: task.name, filename: task.filename,\n    payload_sha256: task.payload_sha256 ?? null, asset_role: task.asset_role ?? null, asset_kind: task.asset_kind ?? null,\n    angle_id: task.angle_id ?? null, layout_type: task.layout_type ?? null,\n    contains_multiple_independent_assets: task.contains_multiple_independent_assets === true,\n    final_status: 'failed_dependency',\n    final_reason: JSON.stringify(readiness.failures ?? []),\n    depends_on: task.depends_on ?? [],\n    reference_inputs: task.reference_inputs ?? [],\n    failed_at: new Date().toISOString()\n  };\n  atomicJson(path.join(statusDir, `${task.asset_id}.json`), record);\n  const donePath = path.join(doneDir, `${task.asset_id}.json`);\n  if (fs.existsSync(donePath)) fs.unlinkSync(donePath);\n  fs.renameSync(queuePath, donePath);\n  writeDependencyState(jobDir, task.asset_id, { state: 'failed', failures: readiness.failures ?? [] });\n}\n\nconst now = Date.now();\nconst workerSlot = acquireSlot(now);\nif (!workerSlot) return [];\n\nconst jobs = listJobDirs();\nconst candidates = [];\nfor (const jobDir of jobs) {\n  const queueDir = path.join(jobDir, '_queue');\n  const runningDir = path.join(jobDir, '_running');\n  const doneDir = path.join(jobDir, '_queue_done');\n  fs.mkdirSync(queueDir, { recursive: true });\n  fs.mkdirSync(runningDir, { recursive: true });\n  fs.mkdirSync(doneDir, { recursive: true });\n\n  for (const name of fs.readdirSync(runningDir).filter((item) => item.endsWith('.json'))) {\n    const runningPath = path.join(runningDir, name);\n    try {\n      const staleTask = readJson(runningPath);\n      const explicitExpiry = Date.parse(String(staleTask.lease_expires_at ?? ''));\n      const fallbackExpiry = fs.statSync(runningPath).mtimeMs + DEFAULT_LEASE_MS;\n      const expiresAt = Number.isFinite(explicitExpiry) ? explicitExpiry : fallbackExpiry;\n      if (expiresAt > now) continue;\n      releaseSlot(staleTask.worker_slot_path, staleTask.lease_id);\n      const assetId = safeAssetId(staleTask.asset_id);\n      const existing = reusableStatus(jobDir, staleTask.asset_id, staleTask.filename);\n      if (existing) {\n        staleTask.recovered_as_completed_at = new Date().toISOString();\n        atomicJson(runningPath, staleTask);\n        const donePath = path.join(doneDir, `${assetId}.json`);\n        if (fs.existsSync(donePath)) archiveCollision(jobDir, runningPath, staleTask, '已有完成任务，归档过期租约');\n        else fs.renameSync(runningPath, donePath);\n      } else {\n        const recovered = {\n          ...staleTask, not_before: 0, recovered_from_stale_at: new Date().toISOString(),\n          previous_lease_id: staleTask.lease_id ?? null, lease_id: null, lease_expires_at: null,\n          running_task_path: null, worker_slot_id: null, worker_slot_path: null\n        };\n        atomicJson(runningPath, recovered);\n        const queuePath = path.join(queueDir, `${assetId}.json`);\n        if (fs.existsSync(queuePath)) archiveCollision(jobDir, runningPath, recovered, '队列中已有同资产任务，避免覆盖');\n        else fs.renameSync(runningPath, queuePath);\n      }\n    } catch (error) {\n      const logsDir = path.join(jobDir, '_logs');\n      fs.mkdirSync(logsDir, { recursive: true });\n      atomicJson(path.join(logsDir, `stale_recovery_${Date.now()}.json`), { file: runningPath, error: error.message, at: new Date().toISOString() });\n    }\n  }\n\n  for (const name of fs.readdirSync(queueDir).filter((item) => item.endsWith('.json'))) {\n    const queuePath = path.join(queueDir, name);\n    try {\n      const task = readJson(queuePath);\n      if (Number(task.not_before ?? 0) > now) continue;\n      const readiness = resolveTaskReadiness(jobDir, task);\n      if (readiness.state === 'failed') {\n        markDependencyFailure(jobDir, queuePath, task, readiness);\n        continue;\n      }\n      if (readiness.state === 'waiting') {\n        writeDependencyState(jobDir, task.asset_id, { state: 'waiting', waiting: readiness.waiting ?? [], registry_path: readiness.registry_path });\n        continue;\n      }\n      clearDependencyState(jobDir, task.asset_id);\n      const stagePriority = { anchor: 0, derived: 1, shot: 2 }[String(task.generation_stage ?? 'derived')] ?? 1;\n      candidates.push({\n        queuePath, jobDir, assetId: safeAssetId(task.asset_id),\n        stagePriority, priority: Number(task.asset_index ?? 999999), queuedAt: String(task.queued_at ?? ''), readiness\n      });\n    } catch (error) {\n      const logsDir = path.join(jobDir, '_logs');\n      fs.mkdirSync(logsDir, { recursive: true });\n      atomicJson(path.join(logsDir, `queue_scan_${Date.now()}_${Math.random().toString(16).slice(2)}.json`), { file: queuePath, error: error.message, at: new Date().toISOString() });\n    }\n  }\n}\n\ncandidates.sort((a, b) => a.stagePriority - b.stagePriority || a.priority - b.priority || a.queuedAt.localeCompare(b.queuedAt));\nfor (const candidate of candidates) {\n  const runningName = `${candidate.assetId}__${workerSlot.leaseId}.json`;\n  const runningPath = path.join(candidate.jobDir, '_running', runningName);\n  try { fs.renameSync(candidate.queuePath, runningPath); } catch { continue; }\n  const task = readJson(runningPath);\n  Object.assign(task, {\n    output_dir: candidate.jobDir,\n    reference_registry_path: candidate.readiness.registry_path,\n    reference_images: candidate.readiness.reference_images ?? [],\n    resolved_reference_inputs: candidate.readiness.resolved_reference_inputs ?? [],\n    omitted_reference_inputs: candidate.readiness.omitted_reference_inputs ?? [],\n    dependency_records: candidate.readiness.dependency_records ?? [],\n    lease_id: workerSlot.leaseId,\n    lease_expires_at: workerSlot.expiresAt,\n    running_task_path: runningPath,\n    worker_slot_id: workerSlot.slotId,\n    worker_slot_path: workerSlot.slotPath,\n    worker_execution_count: Number(task.worker_execution_count ?? 0) + 1,\n    claimed_at: new Date().toISOString()\n  });\n  atomicJson(runningPath, task);\n  atomicJson(workerSlot.slotPath, {\n    schema_version: '3.0', slot_id: workerSlot.slotId, lease_id: workerSlot.leaseId, state: 'running',\n    project_id: task.project_id, job_id: task.job_id, asset_id: task.asset_id,\n    running_task_path: runningPath, acquired_at: task.claimed_at, expires_at: workerSlot.expiresAt\n  });\n  const existing = reusableStatus(candidate.jobDir, task.asset_id, task.filename);\n  return [{ json: { ...task, skip_generation: Boolean(existing), existing_status: existing } }];\n}\nreleaseSlot(workerSlot.slotPath, workerSlot.leaseId);\nreturn [];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        1840
+      ],
+      "id": "f879189f-192e-4578-844d-535e9d9c0a4c",
+      "name": "领取一个待处理资产"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n  if (!item.output_dir) throw new Error('Worker 任务缺少 output_dir');\n  return [{ json: item }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        1840
+      ],
+      "id": "0a53a2a4-98a8-4e9f-b3d9-dfff89a3def9",
+      "name": "创建任务输出目录"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7ffeb93a-7dd8-45de-8535-8fda53a5a1d1",
+              "leftValue": "={{ $json.skip_generation }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4288,
+        1984
+      ],
+      "id": "01662021-d499-46ad-85db-214580ea95a4",
+      "name": "是否已有可复用资产"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nconst source = $json ?? {};\nconst runningPath = String(source.running_task_path ?? '').trim();\nif (!runningPath || !fs.existsSync(runningPath)) {\n  throw new Error('Worker 租约已丢失：当前执行对应的 _running 文件不存在');\n}\n\nconst liveTask = JSON.parse(fs.readFileSync(runningPath, 'utf8'));\nif (\n  source.lease_id &&\n  liveTask.lease_id &&\n  source.lease_id !== liveTask.lease_id\n) {\n  throw new Error('Worker 租约已被其他执行替换，当前执行停止写入');\n}\n\nconst {\n  base64: _base64,\n  mime_type: _mimeType,\n  provider_text: _providerText,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  review_positive_requirements: _positiveRequirements,\n  review_negative_requirements: _negativeRequirements,\n  review_prompt_summary: _promptSummary,\n  ...clean\n} = source;\n\nconst tmp = `${runningPath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\nfs.writeFileSync(\n  tmp,\n  JSON.stringify({\n    ...clean,\n    state_persisted_at: new Date().toISOString(),\n  }, null, 2),\n  'utf8'\n);\nfs.renameSync(tmp, runningPath);\n\n// 当前执行仍需使用 Base64 进行质检或保存，因此返回原始项目。\nreturn [{ json: source }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4960,
+        672
+      ],
+      "id": "cfb7d334-6f21-4065-91e2-631096389d0a",
+      "name": "持久化生图预算状态"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nconst source = $json ?? {};\nconst runningPath = String(source.running_task_path ?? '').trim();\nif (!runningPath || !fs.existsSync(runningPath)) {\n  throw new Error('Worker 租约已丢失：当前执行对应的 _running 文件不存在');\n}\n\nconst liveTask = JSON.parse(fs.readFileSync(runningPath, 'utf8'));\nif (\n  source.lease_id &&\n  liveTask.lease_id &&\n  source.lease_id !== liveTask.lease_id\n) {\n  throw new Error('Worker 租约已被其他执行替换，当前执行停止写入');\n}\n\nconst {\n  base64: _base64,\n  mime_type: _mimeType,\n  provider_text: _providerText,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  review_positive_requirements: _positiveRequirements,\n  review_negative_requirements: _negativeRequirements,\n  review_prompt_summary: _promptSummary,\n  ...clean\n} = source;\n\nconst tmp = `${runningPath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\nfs.writeFileSync(\n  tmp,\n  JSON.stringify({\n    ...clean,\n    state_persisted_at: new Date().toISOString(),\n  }, null, 2),\n  'utf8'\n);\nfs.renameSync(tmp, runningPath);\n\n// 当前执行仍需使用 Base64 进行质检或保存，因此返回原始项目。\nreturn [{ json: source }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7200,
+        400
+      ],
+      "id": "c67e46a9-0f7e-482c-8436-db8b329b7729",
+      "name": "持久化当前候选状态"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nconst source = $json ?? {};\nconst runningPath = String(source.running_task_path ?? '').trim();\nif (!runningPath || !fs.existsSync(runningPath)) {\n  throw new Error('Worker 租约已丢失：当前执行对应的 _running 文件不存在');\n}\n\nconst liveTask = JSON.parse(fs.readFileSync(runningPath, 'utf8'));\nif (\n  source.lease_id &&\n  liveTask.lease_id &&\n  source.lease_id !== liveTask.lease_id\n) {\n  throw new Error('Worker 租约已被其他执行替换，当前执行停止写入');\n}\n\nconst {\n  base64: _base64,\n  mime_type: _mimeType,\n  provider_text: _providerText,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  review_positive_requirements: _positiveRequirements,\n  review_negative_requirements: _negativeRequirements,\n  review_prompt_summary: _promptSummary,\n  ...clean\n} = source;\n\nconst tmp = `${runningPath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\nfs.writeFileSync(\n  tmp,\n  JSON.stringify({\n    ...clean,\n    state_persisted_at: new Date().toISOString(),\n  }, null, 2),\n  'utf8'\n);\nfs.renameSync(tmp, runningPath);\n\n// 当前执行仍需使用 Base64 进行质检或保存，因此返回原始项目。\nreturn [{ json: source }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        816
+      ],
+      "id": "e63f049b-9b36-48f0-a78e-8419a64ba2b1",
+      "name": "持久化最佳候选状态"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nconst source = $json ?? {};\nconst runningPath = String(source.running_task_path ?? '').trim();\nif (!runningPath || !fs.existsSync(runningPath)) {\n  throw new Error('Worker 租约已丢失：当前执行对应的 _running 文件不存在');\n}\n\nconst liveTask = JSON.parse(fs.readFileSync(runningPath, 'utf8'));\nif (\n  source.lease_id &&\n  liveTask.lease_id &&\n  source.lease_id !== liveTask.lease_id\n) {\n  throw new Error('Worker 租约已被其他执行替换，当前执行停止写入');\n}\n\nconst {\n  base64: _base64,\n  mime_type: _mimeType,\n  provider_text: _providerText,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  review_positive_requirements: _positiveRequirements,\n  review_negative_requirements: _negativeRequirements,\n  review_prompt_summary: _promptSummary,\n  ...clean\n} = source;\n\nconst tmp = `${runningPath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\nfs.writeFileSync(\n  tmp,\n  JSON.stringify({\n    ...clean,\n    state_persisted_at: new Date().toISOString(),\n  }, null, 2),\n  'utf8'\n);\nfs.renameSync(tmp, runningPath);\n\n// 当前执行仍需使用 Base64 进行质检或保存，因此返回原始项目。\nreturn [{ json: source }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3616,
+        880
+      ],
+      "id": "60e2b11a-d33c-4226-86b0-d6e8754d6220",
+      "name": "持久化质检重试状态"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$json,\n    requestBody: {\n      model: $json.provider_model,\n      prompt: $json.generation_prompt,\n      size: $json.effective_image_size,\n      sequential_image_generation: 'disabled',\n      stream: false,\n      response_format: 'b64_json',\n      watermark: false,\n      guidance_scale: Number($json.provider_options?.guidance_scale ?? 3)\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6080,
+        384
+      ],
+      "id": "a65db42f-9f29-4645-9861-1b5265fa8ed5",
+      "name": "准备槽位 A｜火山方舟请求"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {
+          "timeout": 1200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        6304,
+        384
+      ],
+      "id": "1e776e13-a374-4c24-a076-24ccd6109219",
+      "name": "模型槽位 A｜火山方舟（在这里选择凭证）",
+      "retryOnFail": false,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "v2B8WyO1cxxW5LWZ",
+          "name": "火山方舟 Seedream"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawMeta = $('准备槽位 A｜火山方舟请求').first().json;\nconst response = $json ?? {};\nconst {\n  requestBody: _requestBody,\n  generation_prompt: _generationPrompt,\n  review_request_body: _reviewBody,\n  base64: _oldBase64,\n  mime_type: _oldMimeType,\n  success: _oldSuccess,\n  ...meta\n} = rawMeta;\n\nconst firstImage = Array.isArray(response.data) && response.data.length ? response.data[0] : null;\nconst base64 = firstImage?.b64_json ?? firstImage?.base64 ?? null;\nconst responseMime = firstImage?.mime_type ?? null;\n\nlet mimeType = responseMime || 'image/png';\nif (typeof base64 === 'string' && base64.startsWith('/9j/')) mimeType = 'image/jpeg';\nelse if (typeof base64 === 'string' && base64.startsWith('iVBORw0KGgo')) mimeType = 'image/png';\n\nconst providerError = response.error?.message ?? response.error?.code ?? response.message ?? null;\nconst errorText = String(providerError ?? '');\nconst statusMatch = errorText.match(/\\b(4\\d\\d|5\\d\\d)\\b/);\nconst providerStatus = Number(\n  response.error?.status ?? response.error?.statusCode ?? response.statusCode ?? statusMatch?.[1] ?? 0\n);\nconst providerCode = String(response.error?.code ?? response.code ?? '').trim();\nlet providerErrorKind = null;\nif (!base64) {\n  if ([401,403].includes(providerStatus)) providerErrorKind = 'authentication';\n  else if (providerStatus === 429 || /rate.?limit|too many requests/i.test(errorText)) providerErrorKind = 'rate_limit';\n  else if ([408,504].includes(providerStatus) || /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(errorText)) providerErrorKind = 'timeout_unknown';\n  else if (providerStatus >= 500) providerErrorKind = 'server_error';\n  else if (providerStatus >= 400) providerErrorKind = 'request_error';\n  else if (errorText) providerErrorKind = 'network_or_provider_error';\n  else providerErrorKind = 'empty_response';\n}\n\nreturn [{\n  json: {\n    ...meta,\n    success: Boolean(base64),\n    base64,\n    mime_type: mimeType,\n    provider_text: providerError ? String(providerError) : null,\n    provider_status: Number.isFinite(providerStatus) ? providerStatus : 0,\n    provider_code: providerCode || null,\n    provider_error_kind: providerErrorKind,\n    generation_provider: 'volcengine_ark',\n    provider_model: response.model ?? meta.provider_model,\n    provider_usage: response.usage ?? response.usageMetadata ?? null,\n    retry_count: base64 ? 0 : Number(meta.retry_count ?? 0),\n    provider_transport_retry_count: base64 ? 0 : Number(meta.provider_transport_retry_count ?? 0)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6528,
+        384
+      ],
+      "id": "5cf073ef-c86f-411b-8810-564bb4ac37e5",
+      "name": "解析槽位 A｜火山方舟结果"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "177c2ff6-915c-47cf-9700-40def3259c3c",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        6752,
+        496
+      ],
+      "id": "40285d0d-283f-4354-850b-a7cf1680573d",
+      "name": "是否成功生成图片"
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "base64",
+        "options": {
+          "fileName": "={{ $json.filename }}",
+          "mimeType": "={{ $json.mime_type }}"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        7200,
+        208
+      ],
+      "id": "2083085a-71f7-4a5b-a501-b184d1b3af6b",
+      "name": "Base64 转图片文件"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('创建任务输出目录').first().json.output_dir + '/' + $binary.data.fileName }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        7424,
+        208
+      ],
+      "id": "7509d7d2-fad4-4c21-a12c-3266d95932f8",
+      "name": "保存资产图片"
+    },
+    {
+      "parameters": {
+        "jsCode": "const {\n  base64: _base64,\n  mime_type: _mimeType,\n  success: _success,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  ...clean\n} = $json;\n\nconst kind = String(clean.provider_error_kind ?? 'empty_response');\nconst status = Number(clean.provider_status ?? 0);\nconst transportCount = Number(clean.provider_transport_retry_count ?? 0) + 1;\nconst generationCount = Number(clean.image_generation_count ?? 0);\nconst maximum = Number(clean.max_image_generations ?? 1);\nconst hasNextPaidRoute = generationCount < maximum;\nconst guard = clean.cost_guard ?? {};\n\nlet retryAllowed = false;\nlet retryAfterSeconds = 60;\nlet finalStatus = 'failed_provider_error';\nlet nextGenerationCount = generationCount;\n\nif (kind === 'authentication' || [401,403].includes(status)) {\n  finalStatus = 'failed_provider_authentication';\n  retryAllowed = guard.fallback_on_auth_error === true && hasNextPaidRoute;\n} else if (kind === 'rate_limit' || status === 429) {\n  const limit = Math.max(0, Number(guard.rate_limit_retry_limit ?? 5));\n  retryAllowed = transportCount <= limit;\n  retryAfterSeconds = Math.min(60 * Math.pow(2, transportCount - 1), 300);\n  finalStatus = 'failed_provider_rate_limit';\n  nextGenerationCount = Math.max(0, generationCount - 1);\n} else if (kind === 'timeout_unknown') {\n  const limit = Math.max(0, Math.min(1, Number(guard.timeout_unknown_retry_limit ?? 1)));\n  retryAllowed = transportCount <= limit && hasNextPaidRoute;\n  retryAfterSeconds = 180;\n  finalStatus = 'failed_provider_timeout_unknown';\n} else if (kind === 'server_error' || kind === 'network_or_provider_error' || kind === 'empty_response') {\n  retryAllowed = hasNextPaidRoute;\n  retryAfterSeconds = Math.min(60 * Math.pow(2, transportCount - 1), 240);\n  finalStatus = kind === 'server_error' ? 'failed_provider_server_error' : 'failed_provider_empty_response';\n} else if (kind === 'request_error') {\n  retryAllowed = guard.fallback_on_request_error !== false && hasNextPaidRoute;\n  finalStatus = 'failed_provider_request_error';\n}\n\nreturn [{\n  json: {\n    ...clean,\n    image_generation_count: nextGenerationCount,\n    retry_count: transportCount,\n    provider_transport_retry_count: transportCount,\n    provider_retry_allowed: retryAllowed,\n    provider_retry_after_seconds: retryAfterSeconds,\n    provider_final_status: finalStatus\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6976,
+        592
+      ],
+      "id": "5c4976e1-463d-44d2-ad63-0b22de86b3bb",
+      "name": "增加空结果重试次数"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7d61a318-d793-4498-9d7d-4b1c486e5344",
+              "leftValue": "={{ $json.provider_retry_allowed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        7200,
+        592
+      ],
+      "id": "d9d018e5-56fe-4de0-9e9d-d7a01e419993",
+      "name": "空结果是否继续重试"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst source = $json ?? {};\nconst runningPath = String(source.running_task_path ?? '').trim();\nconst slotPath = String(source.worker_slot_path ?? '').trim();\nconst assetId = String(source.asset_id ?? '').trim();\n\nif (!runningPath || !assetId || !fs.existsSync(runningPath)) {\n  throw new Error('重新入队失败：缺少有效的 _running 任务文件');\n}\n\nfunction atomicJson(filePath, value) {\n  const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n  fs.renameSync(tmp, filePath);\n}\n\nfunction releaseSlot() {\n  if (!slotPath || !fs.existsSync(slotPath)) return;\n  try {\n    const slot = JSON.parse(fs.readFileSync(slotPath, 'utf8'));\n    if (slot.lease_id && source.lease_id && slot.lease_id !== source.lease_id) return;\n    fs.unlinkSync(slotPath);\n  } catch {\n    // 槽位可能已由租约恢复器处理。\n  }\n}\n\nconst delaySeconds = Math.max(15, Number(source.provider_retry_after_seconds ?? 60));\nconst queueDir = path.join(path.dirname(path.dirname(runningPath)), '_queue');\nfs.mkdirSync(queueDir, { recursive: true });\nconst queuePath = path.join(queueDir, `${assetId}.json`);\n\nif (fs.existsSync(queuePath)) {\n  throw new Error(`重新入队失败：队列中已存在 ${assetId}`);\n}\n\nconst {\n  base64: _base64,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  success: _success,\n  ...clean\n} = source;\n\nconst queued = {\n  ...clean,\n  resume_stage: 'generation',\n  not_before: Date.now() + delaySeconds * 1000,\n  queued_at: new Date().toISOString(),\n  requeue_reason: String(source.provider_text ?? source.provider_error_kind ?? '生图服务暂不可用'),\n  requeue_count: Number(clean.requeue_count ?? 0) + 1,\n  previous_lease_id: clean.lease_id ?? null,\n  lease_id: null,\n  lease_expires_at: null,\n  running_task_path: null,\n  worker_slot_id: null,\n  worker_slot_path: null\n};\n\natomicJson(runningPath, queued);\nfs.renameSync(runningPath, queuePath);\nreleaseSlot();\n\n// 返回空数组，当前执行立即结束；到达 not_before 后由新 Worker 重新领取。\nreturn [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7424,
+        736
+      ],
+      "id": "5d95ba4e-bd81-46bc-8541-4b6e89c1c1c1",
+      "name": "重新入队等待服务恢复"
+    },
+    {
+      "parameters": {
+        "jsCode": "console.error(\n  `[asset-provider-failed] ${$json.asset_id}: ` +\n  `kind=${$json.provider_error_kind}, status=${$json.provider_status}, ` +\n  `detail=${$json.provider_text || 'no response'}`\n);\nreturn [{\n  json: {\n    ...$json,\n    final_status: $json.provider_final_status || 'failed_provider_error',\n    final_reason: $json.provider_text || $json.provider_error_kind || '生图服务没有返回图片'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7424,
+        928
+      ],
+      "id": "e9986d9f-dbda-43dd-a4d9-5edaf0262306",
+      "name": "记录失败资产"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nfunction renewReviewLease(source) {\n  const slotPath = String(source.worker_slot_path ?? '').trim();\n  const runningPath = String(source.running_task_path ?? '').trim();\n  if (!slotPath || !runningPath || !fs.existsSync(slotPath) || !fs.existsSync(runningPath)) {\n    throw new Error('准备质检失败：Worker 槽位或资产租约已丢失');\n  }\n  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();\n\n  function updateOwnedFile(filePath, mutate, label) {\n    const fd = fs.openSync(filePath, 'r+');\n    try {\n      const live = JSON.parse(fs.readFileSync(fd, 'utf8'));\n      if (live.lease_id && source.lease_id && live.lease_id !== source.lease_id) {\n        throw new Error(`${label}已被其他执行持有`);\n      }\n      const buffer = Buffer.from(JSON.stringify(mutate(live), null, 2), 'utf8');\n      fs.ftruncateSync(fd, 0);\n      fs.writeSync(fd, buffer, 0, buffer.length, 0);\n      fs.fsyncSync(fd);\n    } finally {\n      fs.closeSync(fd);\n    }\n    if (!fs.existsSync(filePath)) throw new Error(`${label}已在续租期间被回收`);\n    const current = JSON.parse(fs.readFileSync(filePath, 'utf8'));\n    if (current.lease_id && source.lease_id && current.lease_id !== source.lease_id) {\n      throw new Error(`${label}已在续租期间被替换`);\n    }\n  }\n\n  updateOwnedFile(\n    slotPath,\n    (slot) => ({ ...slot, state: 'reviewing', expires_at: expiresAt }),\n    'Worker 槽位'\n  );\n  updateOwnedFile(\n    runningPath,\n    (task) => ({ ...task, lease_expires_at: expiresAt }),\n    '资产租约'\n  );\n  return expiresAt;\n}\n\nconst asset = {\n  ...$json,\n  lease_expires_at: renewReviewLease($json)\n};\n\nif (!asset.base64) {\n  throw new Error('缺少图片 Base64，无法进行 AI 图片质检');\n}\n\nconst positivePrompt = String(asset.prompt_zh || asset.prompt_en || '').trim();\nconst negativePrompt = String(asset.negative_prompt || '').trim();\n\nif (!positivePrompt) {\n  throw new Error('缺少原始提示词，无法进行基于提示词的图片质检');\n}\n\nfunction detectMime(filePath, buffer) {\n  const extension = path.extname(filePath).toLowerCase();\n  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';\n  if (extension === '.webp') return 'image/webp';\n  if (buffer?.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') return 'image/png';\n  if (buffer?.[0] === 0xff && buffer?.[1] === 0xd8) return 'image/jpeg';\n  return 'image/png';\n}\n\nconst referenceVisuals = [];\nconst resolvedInputs = Array.isArray(asset.resolved_reference_inputs)\n  ? asset.resolved_reference_inputs\n  : [];\nfor (const [index, rawPath] of (Array.isArray(asset.reference_images) ? asset.reference_images : []).entries()) {\n  const filePath = path.resolve(String(rawPath ?? '').trim());\n  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) continue;\n  const buffer = fs.readFileSync(filePath);\n  if (!buffer.length) continue;\n  const matched = resolvedInputs.find((item) => path.resolve(String(item.path ?? '')) === filePath);\n  referenceVisuals.push({\n    index: index + 1,\n    path: filePath,\n    role: String(matched?.role ?? `reference_${index + 1}`),\n    source_asset_id: matched?.asset_id ?? null,\n    mime_type: detectMime(filePath, buffer),\n    base64: buffer.toString('base64')\n  });\n}\n\nconst referenceReviewLines = referenceVisuals.length\n  ? [\n      '',\n      '【参考图连续性检查】',\n      '输入图片顺序：第一张是本轮待质检图片；其后的图片是连续性参考图。',\n      ...referenceVisuals.map((item) =>\n        `参考图${item.index}：role=${item.role}` +\n        `${item.source_asset_id ? `，asset_id=${item.source_asset_id}` : ''}`\n      ),\n      '如果原始提示词或参考职责要求保持同一人物、同一场景、同一道具或同一结构，则把身份、服装、体型、地标、空间拓扑、材质和关键非对称特征的一致性视为 hard 要求。',\n      '不要要求目标图复制参考图的摄影机角度；只检查参考图负责的身份、结构、材质和连续性职责。'\n    ]\n  : [];\n\nconst reviewPrompt = [\n  '你是一名严格的“提示词一致性图片质检 Agent”。',\n  '',\n  '【最重要的原则】',\n  '你的首要任务不是做泛化审美评价，而是把原始提示词拆解为一条条可验证要求，然后逐项对照输入图片。',\n  '所有通过或不通过的结论，都必须能追溯到原始正向提示词或原始负向提示词。',\n  '通用画质问题只能作为补充判断；除非它导致原始提示词要求无法成立，否则不要仅因审美偏好判定失败。',\n  '',\n  `资产类型：${asset.category}`,\n  `资产名称：${asset.name}`,\n  `原始正向提示词：${positivePrompt}`,\n  `原始负向提示词：${negativePrompt || '无'}`,\n  `最低通过分：${asset.review_min_score}`,\n  '',\n  '【第一步：从原始提示词提取要求】',\n  '把正向提示词拆成原子化要求，至少覆盖实际出现的这些类别：',\n  '- 主体/人物/道具身份',\n  '- 数量',\n  '- 外观属性：年龄、性别、发型、发色、服装、颜色、材质、形状',\n  '- 动作、表情、姿态',\n  '- 场景、时间、天气、环境、空间关系',\n  '- 关键道具与关键元素',\n  '- 镜头景别、视角、机位、构图、画幅',\n  '- 灯光、色彩、风格、渲染质感',\n  '- 任何“必须、保持、不要改变、完整、全身、近景”等明确限制',\n  '',\n  '每条要求必须标为：',\n  '- hard：提示词中的明确核心要求；不满足就不能通过。',\n  '- soft：风格倾向或允许合理变化的要求；轻微偏差只扣分。',\n  '',\n  '【第二步：逐条核对图片】',\n  '对每一条正向要求判断 matched=true/false，并给出图片中的直接证据。',\n  '对每一条负向要求判断 violated=true/false，并说明是否出现禁用内容。',\n  '不得凭空添加提示词中没有的要求。',\n  '',\n  '【第三步：最终判定】',\n  '- 任一 hard 正向要求未满足：pass=false。',\n  '- 任一重要负向要求被违反：pass=false。',\n  '- 主体身份错误、数量错误、关键元素缺失、明确服装/颜色错误、场景错误、镜头要求明显错误：视为硬性失败。',\n  '- 与提示词无关的轻微审美差异，不应导致失败。',\n  '- score 表示“图片对原始提示词的整体符合度”，不是单纯画面美观度。',\n  '- fix_prompt 必须只针对未满足或被违反的提示词要求，写成可直接追加到下一轮生图提示词的修正指令。',\n  '',\n  '【生产安全证据】',\n  '必须额外填写 production_safety，作为后续 Registry 和视频引用 Gate 的结构化证据。',\n  '- single_view_clean：画面只能是一张干净单视图；拼图、多面板、设定页或同图多角度必须为 false。',\n  '- contains_multiple_independent_assets：同图出现多个互不属于同一构图的独立资产时为 true。',\n  '- contains_text_or_annotations：出现标题、参数、箭头、标签、标尺或说明文字时为 true。',\n  '- 有参考图时，reference_consistency_checked 必须为 true，并核对参考图职责。',\n  '- 人物/动物/生物有参考图时，identity_consistency_applicable=true，并判断身份、服装、体型和非对称特征是否一致。',\n  '- 地点/场景/镜头有参考图时，scene_topology_applicable=true，并判断地标、空间拓扑、材质和路线关系是否一致。',\n  '- 任何看不清、无法确认或存在歧义的地方必须写入 ambiguity_reasons，不得猜测通过。',\n  ...referenceReviewLines,\n  '',\n  '只返回符合给定结构的 JSON。'\n].join('\\n');\n\nconst reviewSchema = {\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"properties\": {\n    \"prompt_summary\": {\n      \"type\": \"string\"\n    },\n    \"positive_requirements\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"requirement\": {\n            \"type\": \"string\"\n          },\n          \"source_text\": {\n            \"type\": \"string\"\n          },\n          \"category\": {\n            \"type\": \"string\"\n          },\n          \"priority\": {\n            \"type\": \"string\"\n          },\n          \"matched\": {\n            \"type\": \"boolean\"\n          },\n          \"evidence\": {\n            \"type\": \"string\"\n          },\n          \"severity\": {\n            \"type\": \"string\"\n          },\n          \"fix_instruction\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"requirement\",\n          \"source_text\",\n          \"category\",\n          \"priority\",\n          \"matched\",\n          \"evidence\",\n          \"severity\",\n          \"fix_instruction\"\n        ]\n      }\n    },\n    \"negative_requirements\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"requirement\": {\n            \"type\": \"string\"\n          },\n          \"source_text\": {\n            \"type\": \"string\"\n          },\n          \"violated\": {\n            \"type\": \"boolean\"\n          },\n          \"evidence\": {\n            \"type\": \"string\"\n          },\n          \"severity\": {\n            \"type\": \"string\"\n          },\n          \"fix_instruction\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"requirement\",\n          \"source_text\",\n          \"violated\",\n          \"evidence\",\n          \"severity\",\n          \"fix_instruction\"\n        ]\n      }\n    },\n    \"hard_requirement_failures\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"production_safety\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"properties\": {\n        \"reference_consistency_checked\": { \"type\": \"boolean\" },\n        \"identity_consistency_applicable\": { \"type\": \"boolean\" },\n        \"identity_consistent\": { \"type\": \"boolean\" },\n        \"scene_topology_applicable\": { \"type\": \"boolean\" },\n        \"scene_topology_consistent\": { \"type\": \"boolean\" },\n        \"single_view_clean\": { \"type\": \"boolean\" },\n        \"contains_multiple_independent_assets\": { \"type\": \"boolean\" },\n        \"contains_text_or_annotations\": { \"type\": \"boolean\" },\n        \"ambiguity_reasons\": {\n          \"type\": \"array\",\n          \"items\": { \"type\": \"string\" }\n        },\n        \"evidence_summary\": { \"type\": \"string\" }\n      },\n      \"required\": [\n        \"reference_consistency_checked\",\n        \"identity_consistency_applicable\",\n        \"identity_consistent\",\n        \"scene_topology_applicable\",\n        \"scene_topology_consistent\",\n        \"single_view_clean\",\n        \"contains_multiple_independent_assets\",\n        \"contains_text_or_annotations\",\n        \"ambiguity_reasons\",\n        \"evidence_summary\"\n      ]\n    },\n    \"pass\": {\n      \"type\": \"boolean\"\n    },\n    \"score\": {\n      \"type\": \"number\"\n    },\n    \"reason\": {\n      \"type\": \"string\"\n    },\n    \"fix_prompt\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"prompt_summary\",\n    \"positive_requirements\",\n    \"negative_requirements\",\n    \"hard_requirement_failures\",\n    \"production_safety\",\n    \"pass\",\n    \"score\",\n    \"reason\",\n    \"fix_prompt\"\n  ]\n};\nconst imageDataUrl = `data:${asset.mime_type || 'image/png'};base64,${asset.base64}`;\nconst provider = String(asset.review_provider ?? 'google_gemini');\nfunction toGeminiSchema(value) {\n  if (Array.isArray(value)) return value.map(toGeminiSchema);\n  if (!value || typeof value !== 'object') return value;\n  const output = {};\n  for (const [key, child] of Object.entries(value)) {\n    if (key === 'additionalProperties') continue;\n    output[key] = key === 'type' && typeof child === 'string'\n      ? child.toUpperCase()\n      : toGeminiSchema(child);\n  }\n  return output;\n}\n\nlet reviewRequestBody;\nconst geminiParts = [\n  { text: reviewPrompt },\n  { text: '下面第一张图片是本轮待质检图片。' },\n  { inlineData: { mimeType: asset.mime_type || 'image/png', data: asset.base64 } }\n];\nfor (const item of referenceVisuals) {\n  geminiParts.push({ text: `下面是参考图${item.index}，职责：${item.role}${item.source_asset_id ? `，asset_id=${item.source_asset_id}` : ''}` });\n  geminiParts.push({ inlineData: { mimeType: item.mime_type, data: item.base64 } });\n}\nconst openAiContent = [\n  { type: 'text', text: reviewPrompt },\n  { type: 'text', text: '下面第一张图片是本轮待质检图片。' },\n  { type: 'image_url', image_url: { url: imageDataUrl, detail: 'high' } }\n];\nfor (const item of referenceVisuals) {\n  openAiContent.push({ type: 'text', text: `下面是参考图${item.index}，职责：${item.role}${item.source_asset_id ? `，asset_id=${item.source_asset_id}` : ''}` });\n  openAiContent.push({ type: 'image_url', image_url: { url: `data:${item.mime_type};base64,${item.base64}`, detail: 'high' } });\n}\n\nif (provider === 'google_gemini') {\n  reviewRequestBody = {\n    contents: [{ role: 'user', parts: geminiParts }],\n    generationConfig: {\n      temperature: 0.05,\n      candidateCount: 1,\n      maxOutputTokens: 8192,\n      thinkingConfig: { thinkingBudget: 0 },\n      responseMimeType: 'application/json',\n      responseSchema: toGeminiSchema(reviewSchema)\n    }\n  };\n} else if (provider === 'openai_vision') {\n  reviewRequestBody = {\n    model: asset.review_model,\n    messages: [{ role: 'user', content: openAiContent }],\n    max_completion_tokens: 8192,\n    response_format: {\n      type: 'json_schema',\n      json_schema: { name: 'asset_prompt_review', strict: true, schema: reviewSchema }\n    }\n  };\n} else if (provider === 'volcengine_vision') {\n  reviewRequestBody = {\n    model: asset.review_model,\n    messages: [{ role: 'user', content: openAiContent }],\n    temperature: 0.05,\n    max_tokens: 8192,\n    response_format: { type: 'json_object' },\n    stream: false\n  };\n} else {\n  throw new Error(`不支持的质检供应商：${provider}`);\n}\n\nreturn [{ json: { ...asset, review_request_body: reviewRequestBody } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        1744
+      ],
+      "id": "5d07f20f-2615-4394-85eb-11afdc1e7b90",
+      "name": "准备图片质检请求"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.review_model }}:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.review_request_body }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1824,
+        816
+      ],
+      "id": "3c15988f-7e2c-4b4e-826a-00c2e174b4f9",
+      "name": "质检槽位 G｜Google Gemini（在这里选择凭证）",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "A3Gp6P8t6QxrV3di",
+          "name": "Gemini 图片生成"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawAsset = $('准备图片质检请求').item.json;\n\nconst {\n  review_request_body: _reviewRequestBody,\n  requestBody: _staleGenerationBody,\n  ...asset\n} = rawAsset;\n\nconst normalized = $json.__review_normalized ?? {};\nlet text = String(normalized.text ?? '').trim();\nconst finishReason = String(normalized.finish_reason ?? '');\nconst finishMessage = String(normalized.finish_message ?? normalized.error?.message ?? '');\nconst promptBlockReason = String(normalized.prompt_block_reason ?? '').trim();\nconst safetyRatings = normalized.safety_ratings ?? [];\nconst usageMetadata = normalized.usage_metadata ?? {};\nconst normalizedProvider = String(normalized.provider ?? asset.review_provider ?? 'unknown');\nconst normalizedModel = String(normalized.model ?? asset.review_model ?? 'unknown');\n\nconst isProhibitedContent =\n  ['PROHIBITED_CONTENT','CONTENT_FILTER','SAFETY','BLOCKED'].includes(promptBlockReason.toUpperCase()) || finishReason.toLowerCase() === 'content_filter';\n\nconst isSafeFallback =\n  asset.review_safe_mode === true;\n\nfunction buildDiagnostic() {\n  return [\n    promptBlockReason\n      ? `prompt_block=${promptBlockReason}`\n      : '',\n    finishReason\n      ? `finish_reason=${finishReason}`\n      : 'finish_reason=NO_CANDIDATE_TEXT',\n    finishMessage\n      ? `finish_message=${finishMessage}`\n      : '',\n    usageMetadata.thoughtsTokenCount != null\n      ? `thinking_tokens=${usageMetadata.thoughtsTokenCount}`\n      : '',\n    usageMetadata.candidatesTokenCount != null\n      ? `candidate_tokens=${usageMetadata.candidatesTokenCount}`\n      : ''\n  ].filter(Boolean).join('；');\n}\n\n// 从原提示词中移除容易触发内容策略的叙事情节，\n// 只保留中性的外观、服装、场景、构图和风格要求。\n// 这里只用于“质检重试”，不会用于重新生图。\nfunction buildNeutralVisualPrompt(value) {\n  const source = String(value ?? '')\n    .normalize('NFKC')\n    .replace(/\\r/g, '\\n')\n    .trim();\n\n  if (!source) {\n    return [\n      '静态视觉资产质量检查。',\n      '核对主体是否完整、结构是否自然、服装与颜色是否稳定、',\n      '背景是否清晰、构图是否合理、画面是否存在明显生成缺陷。'\n    ].join('');\n  }\n\n  const sensitivePattern =\n    /(未成年|儿童|幼童|小孩|男孩|女孩|学生|校园欺凌|欺凌|暴力|打斗|殴打|攻击|受伤|伤势|伤口|流血|血液|鲜血|死亡|尸体|杀害|自残|虐待|武器|刀具|枪械|毒品|色情|裸露|性行为|minor|child|kid|boy|girl|student|school\\s*bully|bully|violence|violent|fight|beating|assault|injury|injured|wound|blood|bleeding|death|dead\\s*body|corpse|kill|self[-\\s]?harm|abuse|weapon|knife|gun|drug|sexual|nude)/i;\n\n  const segments = source\n    .split(/[。！？!?；;\\n]+/)\n    .map((item) => item.trim())\n    .filter(Boolean)\n    .filter((item) => !sensitivePattern.test(item));\n\n  const neutralDetails = segments\n    .join('；')\n    .replace(/\\s+/g, ' ')\n    .slice(0, 1800)\n    .trim();\n\n  return [\n    '静态视觉资产质量检查。',\n    '只核对图片中可以直接观察到的视觉属性：主体完整性、数量、',\n    '外观轮廓、发型、服装、颜色、材质、姿态、道具、背景、',\n    '空间关系、构图、画幅、灯光、风格以及明显生成缺陷。',\n    '不要推断人物年龄、身份或故事情节；不要描述或评价敏感行为。',\n    neutralDetails\n      ? `中性视觉要求：${neutralDetails}`\n      : '中性视觉要求：画面主体完整，结构自然，视觉设定稳定，背景和构图清晰。'\n  ].join('\\n');\n}\n\nfunction rememberOriginalFields(current) {\n  if (current.review_original_fields) {\n    return current.review_original_fields;\n  }\n\n  return {\n    name: current.name,\n    prompt_zh: current.prompt_zh,\n    prompt_en: current.prompt_en,\n    negative_prompt: current.negative_prompt\n  };\n}\n\nfunction restoreOriginalFields(current) {\n  const original = current.review_original_fields;\n\n  if (!original || typeof original !== 'object') {\n    return {\n      ...current,\n      review_safe_mode: false\n    };\n  }\n\n  const {\n    review_original_fields: _originalFields,\n    ...rest\n  } = current;\n\n  return {\n    ...rest,\n    name: original.name,\n    prompt_zh: original.prompt_zh,\n    prompt_en: original.prompt_en,\n    negative_prompt: original.negative_prompt,\n    review_safe_mode: false\n  };\n}\n\n// Gemini 有时返回 HTTP 200，但没有候选文本。\n// 普通空响应继续走原有接口重试。\n// PROHIBITED_CONTENT 第一次出现时，自动改用中性质检提示词重试一次。\nif (!text) {\n  const diagnostic =\n    buildDiagnostic() ||\n    '质检接口返回空内容';\n\n  const maxApiRetries = Math.max(\n    1,\n    Number(asset.review_api_max_retries ?? 8)\n  );\n\n  if (isProhibitedContent && !isSafeFallback) {\n    const originalFields =\n      rememberOriginalFields(asset);\n\n    const neutralSource = [\n      asset.prompt_zh,\n      asset.prompt_en\n    ].filter(Boolean).join('\\n');\n\n    return [{\n      json: {\n        ...asset,\n\n        // 暂存原字段，质检完成后恢复，防止影响后续生图。\n        review_original_fields: originalFields,\n\n        // “准备图片质检请求”会读取这些字段。\n        // 下一轮只把中性视觉要求发送给当前质检模型。\n        name: `视觉资产 ${asset.asset_id || asset.asset_index || ''}`.trim(),\n        prompt_zh: buildNeutralVisualPrompt(neutralSource),\n        prompt_en: '',\n        negative_prompt: '',\n\n        review_safe_mode: true,\n        review_safe_fallback_attempted: true,\n        review_response_ok: false,\n        review_pass: false,\n\n        // 保证能进入现有“质检接口是否继续重试”真分支。\n        review_api_retry_count: Math.min(\n          Number(asset.review_api_retry_count ?? 0) + 1,\n          Math.max(0, maxApiRetries - 1)\n        ),\n\n        review_api_error:\n          `${diagnostic}；已切换为中性视觉质检，下一次请求不再原样发送敏感叙事文本`,\n\n        review_finish_reason:\n          finishReason || null,\n        review_finish_message:\n          finishMessage || null,\n        review_prompt_block_reason:\n          promptBlockReason || null,\n        review_safety_ratings:\n          safetyRatings,\n        review_usage_metadata:\n          usageMetadata\n      }\n    }];\n  }\n\n  // 中性降级请求仍被内容策略拦截时立即终止，\n  // 将重试次数设为上限，避免重复发送同一请求。\n  if (isProhibitedContent && isSafeFallback) {\n    const restoredAsset =\n      restoreOriginalFields(asset);\n\n    return [{\n      json: {\n        ...restoredAsset,\n        review_response_ok: false,\n        review_pass: false,\n        review_prompt_blocked_terminal: true,\n        review_api_retry_count: maxApiRetries,\n        review_api_error:\n          `${diagnostic}；中性视觉质检仍被内容策略拦截，已停止继续重试`,\n        review_finish_reason:\n          finishReason || null,\n        review_finish_message:\n          finishMessage || null,\n        review_prompt_block_reason:\n          promptBlockReason || null,\n        review_safety_ratings:\n          safetyRatings,\n        review_usage_metadata:\n          usageMetadata\n      }\n    }];\n  }\n\n  // 不是内容策略拦截：按原逻辑处理普通空响应或临时接口异常。\n  const apiRetryCount =\n    Number(asset.review_api_retry_count ?? 0) + 1;\n\n  return [{\n    json: {\n      ...asset,\n      review_response_ok: false,\n      review_pass: false,\n      review_api_retry_count: apiRetryCount,\n      review_api_error: diagnostic,\n      review_finish_reason:\n        finishReason || null,\n      review_finish_message:\n        finishMessage || null,\n      review_prompt_block_reason:\n        promptBlockReason || null,\n      review_safety_ratings:\n        safetyRatings,\n      review_usage_metadata:\n        usageMetadata\n    }\n  }];\n}\n\ntext = text\n  .replace(/^```(?:json)?\\s*/i, '')\n  .replace(/\\s*```$/i, '')\n  .trim();\n\nlet result;\n\ntry {\n  result = JSON.parse(text);\n} catch (error) {\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n\n  if (!match) {\n    const apiRetryCount =\n      Number(asset.review_api_retry_count ?? 0) + 1;\n\n    return [{\n      json: {\n        ...asset,\n        review_response_ok: false,\n        review_pass: false,\n        review_api_retry_count: apiRetryCount,\n        review_api_error:\n          `质检结果不是有效 JSON：${text.slice(0, 500)}`,\n        review_finish_reason:\n          finishReason || null,\n        review_finish_message:\n          finishMessage || null,\n        review_prompt_block_reason:\n          promptBlockReason || null,\n        review_safety_ratings:\n          safetyRatings,\n        review_usage_metadata:\n          usageMetadata\n      }\n    }];\n  }\n\n  try {\n    result = JSON.parse(match[0]);\n  } catch (nestedError) {\n    const apiRetryCount =\n      Number(asset.review_api_retry_count ?? 0) + 1;\n\n    return [{\n      json: {\n        ...asset,\n        review_response_ok: false,\n        review_pass: false,\n        review_api_retry_count: apiRetryCount,\n        review_api_error:\n          `提取到 JSON 外形，但解析失败：${match[0].slice(0, 500)}`,\n        review_finish_reason:\n          finishReason || null,\n        review_finish_message:\n          finishMessage || null,\n        review_prompt_block_reason:\n          promptBlockReason || null,\n        review_safety_ratings:\n          safetyRatings,\n        review_usage_metadata:\n          usageMetadata\n      }\n    }];\n  }\n}\n\n// 如果本次使用的是中性降级质检，先恢复原始提示词。\n// 这样质检不通过后重新生图时，仍使用原始资产提示词。\nconst restoredAsset =\n  restoreOriginalFields(asset);\n\nconst positiveRequirements =\n  Array.isArray(result.positive_requirements)\n    ? result.positive_requirements\n    : [];\n\nconst negativeRequirements =\n  Array.isArray(result.negative_requirements)\n    ? result.negative_requirements\n    : [];\n\nconst modelHardFailures =\n  Array.isArray(result.hard_requirement_failures)\n    ? result.hard_requirement_failures\n        .map(String)\n        .filter(Boolean)\n    : [];\n\nconst derivedPositiveHardFailures =\n  positiveRequirements\n    .filter((item) =>\n      String(item?.priority || '').toLowerCase() === 'hard' &&\n      item?.matched !== true\n    )\n    .map((item) =>\n      String(\n        item?.requirement ||\n        item?.source_text ||\n        '未满足的硬性正向要求'\n      )\n    );\n\nconst violatedNegativeRequirements =\n  negativeRequirements\n    .filter((item) =>\n      item?.violated === true\n    )\n    .map((item) =>\n      String(\n        item?.requirement ||\n        item?.source_text ||\n        '违反负向提示词'\n      )\n    );\n\nconst productionSafety =\n  result.production_safety &&\n  typeof result.production_safety === 'object' &&\n  !Array.isArray(result.production_safety)\n    ? result.production_safety\n    : {};\nconst category = String(restoredAsset.category ?? '').toLowerCase();\nconst hasReferenceImages =\n  (Array.isArray(restoredAsset.reference_images) && restoredAsset.reference_images.length > 0) ||\n  (Array.isArray(restoredAsset.resolved_reference_inputs) && restoredAsset.resolved_reference_inputs.length > 0);\nconst identityConsistencyExpected =\n  hasReferenceImages && /^(character|animal|creature)$/.test(category);\nconst sceneTopologyExpected =\n  hasReferenceImages && /^(location|scene|shot|storyboard|environment)$/.test(category);\nconst videoReferenceExpected =\n  String(restoredAsset.asset_role ?? '') === 'video_reference';\nconst safetyFailures = [];\n\nif (Object.keys(productionSafety).length === 0) {\n  safetyFailures.push('缺少 production_safety 结构化生产安全证据');\n}\nif (hasReferenceImages && productionSafety.reference_consistency_checked !== true) {\n  safetyFailures.push('存在参考图但未完成参考一致性检查');\n}\nif (identityConsistencyExpected && (\n  productionSafety.identity_consistency_applicable !== true ||\n  productionSafety.identity_consistent !== true\n)) {\n  safetyFailures.push('人物/生物参考身份连续性未明确通过');\n}\nif (sceneTopologyExpected && (\n  productionSafety.scene_topology_applicable !== true ||\n  productionSafety.scene_topology_consistent !== true\n)) {\n  safetyFailures.push('场景参考拓扑连续性未明确通过');\n}\nif (videoReferenceExpected && productionSafety.single_view_clean !== true) {\n  safetyFailures.push('视频参考图不是干净单视图');\n}\nif (videoReferenceExpected && productionSafety.contains_multiple_independent_assets !== false) {\n  safetyFailures.push('视频参考图包含多个独立资产或状态未知');\n}\nif (videoReferenceExpected && productionSafety.contains_text_or_annotations !== false) {\n  safetyFailures.push('视频参考图包含文字/标注或状态未知');\n}\n\nconst hardFailures = [\n  ...new Set([\n    ...modelHardFailures,\n    ...derivedPositiveHardFailures,\n    ...violatedNegativeRequirements,\n    ...safetyFailures\n  ])\n];\n\nconst rawScore = Number(result.score ?? 0);\n\nconst score = Math.min(\n  100,\n  Math.max(\n    0,\n    Number.isFinite(rawScore)\n      ? rawScore\n      : 0\n  )\n);\n\nconst modelPass = Boolean(result.pass);\n\nconst reviewPass =\n  modelPass &&\n  score >= Number(restoredAsset.review_min_score ?? 80) &&\n  hardFailures.length === 0;\n\nconst positiveFixes =\n  positiveRequirements\n    .filter((item) =>\n      item?.matched !== true\n    )\n    .map((item) =>\n      String(item?.fix_instruction || '').trim()\n    )\n    .filter(Boolean);\n\nconst negativeFixes =\n  negativeRequirements\n    .filter((item) =>\n      item?.violated === true\n    )\n    .map((item) =>\n      String(item?.fix_instruction || '').trim()\n    )\n    .filter(Boolean);\n\nconst modelFixPrompt =\n  String(result.fix_prompt ?? '').trim();\n\nconst reason =\n  String(result.reason ?? '').trim();\n\nconst feedbackParts = [\n  modelFixPrompt,\n  ...positiveFixes,\n  ...negativeFixes,\n  hardFailures.length\n    ? `必须满足或修正：${hardFailures.join('；')}`\n    : ''\n].filter(Boolean);\n\nconst history =\n  Array.isArray(restoredAsset.review_history)\n    ? [...restoredAsset.review_history]\n    : [];\n\nhistory.push({\n  attempt:\n    Number(restoredAsset.review_retry_count ?? 0) + 1,\n  mode: isSafeFallback\n    ? 'safe_visual_fallback'\n    : 'full_prompt_review',\n  pass: reviewPass,\n  score,\n  reason: reason.slice(0, 500),\n  hard_requirement_failures:\n    hardFailures.slice(0, 20),\n  production_safety: productionSafety,\n  review_provider: normalizedProvider,\n  review_model: normalizedModel,\n  reviewed_at:\n    new Date().toISOString()\n});\n\nreturn [{\n  json: {\n    ...restoredAsset,\n\n    review_response_ok: true,\n    review_provider_used: normalizedProvider,\n    review_model_used: normalizedModel,\n    review_api_retry_count: 0,\n    review_api_error: null,\n\n    review_pass: reviewPass,\n    review_model_pass: modelPass,\n    review_score: score,\n    review_reason: reason,\n\n    review_mode: isSafeFallback\n      ? 'safe_visual_fallback'\n      : 'full_prompt_review',\n\n    review_safe_fallback_used:\n      isSafeFallback,\n\n    review_prompt_summary:\n      String(result.prompt_summary ?? ''),\n\n    review_positive_requirements:\n      positiveRequirements,\n\n    review_negative_requirements:\n      negativeRequirements,\n\n    review_hard_requirement_failures:\n      hardFailures,\n\n    review_production_safety: {\n      ...productionSafety,\n      ambiguity_reasons: Array.isArray(productionSafety.ambiguity_reasons)\n        ? productionSafety.ambiguity_reasons.map(String).filter(Boolean).slice(0, 20)\n        : [],\n      reference_image_count: Array.isArray(restoredAsset.resolved_reference_inputs)\n        ? restoredAsset.resolved_reference_inputs.length\n        : 0\n    },\n\n    qa_feedback:\n      [...new Set(feedbackParts)].join('；'),\n\n    review_history:\n      history.slice(-5),\n\n    review_finish_reason:\n      finishReason || null,\n\n    review_prompt_block_reason: null,\n    review_prompt_blocked_terminal: false,\n    review_usage_metadata:\n      usageMetadata\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        1008
+      ],
+      "id": "c1d1bff6-88a2-4867-936e-d8b82788b8f1",
+      "name": "统一解析质检结果"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "544f4734-5d28-4a54-b1d8-e0232c019707",
+              "leftValue": "={{ $json.review_pass }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3168,
+        816
+      ],
+      "id": "0d8fceb2-0059-494d-84f8-72b178ab93b2",
+      "name": "图片质检是否通过"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$json,\n    review_retry_count: Number($json.review_retry_count ?? 0) + 1\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3392,
+        880
+      ],
+      "id": "3870da77-240f-4660-b657-9e830d772dc8",
+      "name": "增加质检重试次数"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "56921c2c-e4c9-4313-9d30-55add0e155d8",
+              "leftValue": "={{ $json.review_retry_count }}",
+              "rightValue": "={{ Number($json.review_max_retries ?? 2) + 1 }}",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3840,
+        880
+      ],
+      "id": "17dd6364-d722-48c3-9c9d-e487ac94a9f2",
+      "name": "质检是否继续重试"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst source = $json ?? {};\nconst runningPath = String(source.running_task_path ?? '').trim();\nconst slotPath = String(source.worker_slot_path ?? '').trim();\nconst assetId = String(source.asset_id ?? '').trim();\n\nif (!runningPath || !assetId || !fs.existsSync(runningPath)) {\n  throw new Error('重新入队失败：缺少有效的 _running 任务文件');\n}\n\nfunction atomicJson(filePath, value) {\n  const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n  fs.renameSync(tmp, filePath);\n}\n\nfunction releaseSlot() {\n  if (!slotPath || !fs.existsSync(slotPath)) return;\n  try {\n    const slot = JSON.parse(fs.readFileSync(slotPath, 'utf8'));\n    if (slot.lease_id && source.lease_id && slot.lease_id !== source.lease_id) return;\n    fs.unlinkSync(slotPath);\n  } catch {\n    // 槽位可能已由租约恢复器处理。\n  }\n}\n\nconst delaySeconds = Math.max(15, Number(Math.min(30 * Math.pow(2, Math.max(0, Number(source.review_retry_count ?? 1) - 1)), 300)));\nconst queueDir = path.join(path.dirname(path.dirname(runningPath)), '_queue');\nfs.mkdirSync(queueDir, { recursive: true });\nconst queuePath = path.join(queueDir, `${assetId}.json`);\n\nif (fs.existsSync(queuePath)) {\n  throw new Error(`重新入队失败：队列中已存在 ${assetId}`);\n}\n\nconst {\n  base64: _base64,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  success: _success,\n  ...clean\n} = source;\n\nconst queued = {\n  ...clean,\n  resume_stage: 'generation',\n  not_before: Date.now() + delaySeconds * 1000,\n  queued_at: new Date().toISOString(),\n  requeue_reason: String(source.review_reason ?? source.qa_feedback ?? '图片质检未通过'),\n  requeue_count: Number(clean.requeue_count ?? 0) + 1,\n  previous_lease_id: clean.lease_id ?? null,\n  lease_id: null,\n  lease_expires_at: null,\n  running_task_path: null,\n  worker_slot_id: null,\n  worker_slot_path: null\n};\n\natomicJson(runningPath, queued);\nfs.renameSync(runningPath, queuePath);\nreleaseSlot();\n\n// 返回空数组，当前执行立即结束；到达 not_before 后由新 Worker 重新领取。\nreturn [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4288,
+        720
+      ],
+      "id": "400e180f-8ac4-48ab-a462-ff75ae8c9a32",
+      "name": "重新入队等待按质检意见重生成"
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $('写入质检失败报告').item.json;\n\nconsole.error(\n  `[asset-review-failed] ${source.asset_id}: ` +\n  `提示词一致性质检未通过，score=${source.review_score}，` +\n  `retry=${source.review_retry_count}，` +\n  `rejected_image=${source.rejected_dir}/${source.rejected_filename}，` +\n  `report=${source.rejected_report_path}`\n);\n\nconst {\n  // 记录完成后不再把大图片数据带回循环\n  base64: _base64,\n  mime_type: _mimeType,\n  provider_text: _providerText,\n  success: _success,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  ...clean\n} = source;\n\nreturn [{\n  json: {\n    ...clean,\n    final_status: 'failed_prompt_compliance_review',\n    final_reason: clean.review_reason,\n    final_prompt_summary: clean.review_prompt_summary,\n    final_positive_requirements: clean.review_positive_requirements,\n    final_negative_requirements: clean.review_negative_requirements,\n    final_hard_requirement_failures: clean.review_hard_requirement_failures,\n    final_rejected_image: `${clean.rejected_dir}/${clean.rejected_filename}`,\n    final_review_report: clean.rejected_report_path\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7424,
+        1344
+      ],
+      "id": "bf1e340b-1808-4a1e-9487-1be8a583056a",
+      "name": "记录质检失败资产"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2dd455a4-4d95-48a7-bda3-fbc03dbb1710",
+              "leftValue": "={{ $json.review_response_ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2496,
+        1008
+      ],
+      "id": "e7609e37-41f4-4bc4-8229-82f811cc51ce",
+      "name": "质检响应是否有效"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5e62ef8c-d69b-4366-9d52-d3bdab324111",
+              "leftValue": "={{ Number($json.review_api_retry_count ?? 0) }}",
+              "rightValue": "={{ Number($json.review_api_max_retries ?? 3) }}",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2720,
+        1536
+      ],
+      "id": "ee6186b7-4752-4a2f-9a5e-424d0c67d3ea",
+      "name": "质检接口是否继续重试"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst source = $json ?? {};\nconst runningPath = String(source.running_task_path ?? '').trim();\nconst slotPath = String(source.worker_slot_path ?? '').trim();\nconst assetId = String(source.asset_id ?? '').trim();\n\nif (!runningPath || !assetId || !fs.existsSync(runningPath)) {\n  throw new Error('重新入队失败：缺少有效的 _running 任务文件');\n}\n\nfunction atomicJson(filePath, value) {\n  const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n  fs.renameSync(tmp, filePath);\n}\n\nfunction releaseSlot() {\n  if (!slotPath || !fs.existsSync(slotPath)) return;\n  try {\n    const slot = JSON.parse(fs.readFileSync(slotPath, 'utf8'));\n    if (slot.lease_id && source.lease_id && slot.lease_id !== source.lease_id) return;\n    fs.unlinkSync(slotPath);\n  } catch {\n    // 槽位可能已由租约恢复器处理。\n  }\n}\n\nconst delaySeconds = Math.max(15, Number(Math.min(30 * Math.pow(2, Math.max(0, Number(source.review_api_retry_count ?? 1) - 1)), 300)));\nconst queueDir = path.join(path.dirname(path.dirname(runningPath)), '_queue');\nfs.mkdirSync(queueDir, { recursive: true });\nconst queuePath = path.join(queueDir, `${assetId}.json`);\n\nif (fs.existsSync(queuePath)) {\n  throw new Error(`重新入队失败：队列中已存在 ${assetId}`);\n}\n\nconst {\n  base64: _base64,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n  success: _success,\n  ...clean\n} = source;\n\nconst queued = {\n  ...clean,\n  resume_stage: 'review',\n  not_before: Date.now() + delaySeconds * 1000,\n  queued_at: new Date().toISOString(),\n  requeue_reason: String(source.review_api_error ?? '质检接口暂不可用'),\n  requeue_count: Number(clean.requeue_count ?? 0) + 1,\n  previous_lease_id: clean.lease_id ?? null,\n  lease_id: null,\n  lease_expires_at: null,\n  running_task_path: null,\n  worker_slot_id: null,\n  worker_slot_path: null\n};\n\natomicJson(runningPath, queued);\nfs.renameSync(runningPath, queuePath);\nreleaseSlot();\n\n// 返回空数组，当前执行立即结束；到达 not_before 后由新 Worker 重新领取。\nreturn [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        1408
+      ],
+      "id": "238b7639-1c9d-44e7-a46a-82e33514cd65",
+      "name": "重新入队等待重试质检"
+    },
+    {
+      "parameters": {
+        "jsCode": "console.error(\n  `[asset-review-api-failed] ${$json.asset_id}: ` +\n  `质检接口连续返回空内容，retry=${$json.review_api_retry_count}，` +\n  `detail=${$json.review_api_error}`\n);\n\nconst {\n  base64: _base64,\n  mime_type: _mimeType,\n  review_request_body: _reviewRequestBody,\n  requestBody: _requestBody,\n  ...clean\n} = $json;\n\nreturn [{\n  json: {\n    ...clean,\n    final_status: 'failed_review_api_empty_response',\n    final_reason: clean.review_api_error,\n    final_finish_reason: clean.review_finish_reason,\n    final_prompt_block_reason: clean.review_prompt_block_reason,\n    final_safety_ratings: clean.review_safety_ratings,\n    final_usage_metadata: clean.review_usage_metadata\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        1600
+      ],
+      "id": "17b5984e-087a-44af-8563-3db5f901ffe5",
+      "name": "记录质检接口失败资产"
+    },
+    {
+      "parameters": {
+        "jsCode": "const {\n  // 下一轮重新生图前清理当前候选图片和大字段\n  base64: _base64,\n  mime_type: _mimeType,\n  provider_text: _providerText,\n  success: _success,\n  requestBody: _requestBody,\n  review_request_body: _reviewRequestBody,\n\n  review_positive_requirements: _positiveRequirements,\n  review_negative_requirements: _negativeRequirements,\n  review_prompt_summary: _promptSummary,\n\n  ...clean\n} = $json;\n\nreturn [{ json: clean }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4064,
+        720
+      ],
+      "id": "3d251389-4677-450c-8ffb-536c8716f9fe",
+      "name": "清理失败候选图后重生成"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst outputDir = $('创建任务输出目录').first().json.output_dir;\nconst rejectedDir = path.join(outputDir, '_rejected');\nfs.mkdirSync(rejectedDir, { recursive: true });\n\nconst filenameBase = String($json.filename || $json.asset_id || 'asset')\n  .replace(/\\.[^.]+$/, '');\n\nconst reportPath = path.join(\n  rejectedDir,\n  `${filenameBase}_review.json`\n);\n\nconst report = {\n  project_id: $json.project_id,\n  job_id: $json.job_id,\n  asset_id: $json.asset_id,\n  name: $json.name,\n  filename: $json.filename,\n  final_status: 'failed_prompt_compliance_review',\n  review_score: $json.review_score,\n  review_reason: $json.review_reason,\n  hard_requirement_failures: $json.review_hard_requirement_failures ?? [],\n  qa_feedback: $json.qa_feedback ?? '',\n  review_retry_count: $json.review_retry_count,\n  review_history: $json.review_history ?? [],\n  recorded_at: new Date().toISOString()\n};\n\nfs.writeFileSync(\n  reportPath,\n  JSON.stringify(report, null, 2),\n  'utf8'\n);\n\nreturn [{\n  json: {\n    ...$json,\n    rejected_dir: rejectedDir,\n    rejected_report_path: reportPath,\n    rejected_filename: `${filenameBase}_REJECTED_score_${Number($json.review_score ?? 0)}.png`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6752,
+        1344
+      ],
+      "id": "7116515f-8704-4a16-b269-03959f002daa",
+      "name": "写入质检失败报告"
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "base64",
+        "options": {
+          "fileName": "={{ $json.rejected_filename }}",
+          "mimeType": "={{ $json.mime_type || 'image/png' }}"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        6976,
+        1344
+      ],
+      "id": "329313ed-3b2a-42f6-8fd3-4e1f0c6737b8",
+      "name": "失败候选图转文件"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('写入质检失败报告').item.json.rejected_dir + '/' + $('写入质检失败报告').item.json.rejected_filename }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        7200,
+        1344
+      ],
+      "id": "91d8eeab-134a-4c87-a3b4-4afb84e0ccda",
+      "name": "保存失败候选图"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\n\nconst source =\n  $json && typeof $json === 'object' && !Array.isArray($json)\n    ? $json\n    : {};\n\nconst review =\n  $('统一解析质检结果').item.json ?? {};\n\nconst outputDir =\n  $('创建任务输出目录').first().json.output_dir;\n\nconst filename = String(\n  source.filename ??\n  review.filename ??\n  ''\n).trim();\n\nconst assetId = String(\n  source.asset_id ??\n  review.asset_id ??\n  ''\n).trim();\n\nif (!filename || !assetId) {\n  throw new Error(\n    '记录成功资产失败：缺少 filename 或 asset_id'\n  );\n}\n\nconst absolutePath = path.resolve(\n  outputDir,\n  filename\n);\nconst safeRoot = path.resolve(outputDir) + path.sep;\n\nif (!absolutePath.startsWith(safeRoot)) {\n  throw new Error(\n    `图片路径超出任务目录：${absolutePath}`\n  );\n}\n\nif (!fs.existsSync(absolutePath)) {\n  throw new Error(\n    `图片文件不存在：${absolutePath}`\n  );\n}\n\nconst stat = fs.statSync(absolutePath);\nif (!stat.isFile() || stat.size <= 0) {\n  throw new Error(\n    `图片文件无效：${absolutePath}`\n  );\n}\n\nconst hash = crypto\n  .createHash('sha256')\n  .update(fs.readFileSync(absolutePath))\n  .digest('hex');\nconst boundHash = `sha256:${hash}`;\n\nconst record = {\n  project_id: String(\n    source.project_id ??\n    review.project_id ??\n    ''\n  ),\n  job_id: String(\n    source.job_id ??\n    review.job_id ??\n    ''\n  ),\n  asset_index: Number(\n    source.asset_index ??\n    review.asset_index ??\n    0\n  ),\n  asset_id: assetId,\n  parent_asset_id: source.parent_asset_id ?? review.parent_asset_id ?? null,\n  family_id: source.family_id ?? review.family_id ?? null,\n  asset_code: source.asset_code ?? review.asset_code ?? null,\n  generation_stage: source.generation_stage ?? review.generation_stage ?? 'derived',\n  payload_sha256: source.payload_sha256 ?? review?.payload_sha256 ?? null,\n  asset_role: source.asset_role ?? review?.asset_role ?? null,\n  asset_kind: source.asset_kind ?? review?.asset_kind ?? null,\n  angle_id: source.angle_id ?? review?.angle_id ?? null,\n  layout_type: source.layout_type ?? review?.layout_type ?? null,\n  contains_multiple_independent_assets: (source.contains_multiple_independent_assets ?? review?.contains_multiple_independent_assets) === true,\n  category: String(\n    source.category ??\n    review.category ??\n    'other'\n  ),\n  aspect_ratio: source.aspect_ratio ?? review.aspect_ratio ?? null,\n  lock_id: source.lock_id ?? review.lock_id ?? null,\n  lock_hash: source.lock_hash ?? review.lock_hash ?? null,\n  prompt_policy: source.prompt_policy ?? review.prompt_policy ?? null,\n  anchor_roles: source.anchor_roles ?? review.anchor_roles ?? [],\n  depends_on: source.depends_on ?? review.depends_on ?? [],\n  reference_inputs: source.reference_inputs ?? review.reference_inputs ?? [],\n  reference_images: source.reference_images ?? review.reference_images ?? [],\n  resolved_reference_inputs: source.resolved_reference_inputs ?? review.resolved_reference_inputs ?? [],\n  reference_registry_path: source.reference_registry_path ?? review.reference_registry_path ?? null,\n  name: String(\n    source.name ??\n    review.name ??\n    assetId\n  ),\n  filename,\n  relative_path: filename,\n  final_status: 'accepted',\n  acceptance_mode: 'strict_review',\n  file_size: stat.size,\n  sha256: boundHash,\n  review_score: Number(\n    source.review_score ??\n    review.review_score ??\n    0\n  ),\n  image_generation_count: Number(\n    source.image_generation_count ??\n    review.image_generation_count ??\n    1\n  ),\n  review_retry_count: Number(\n    source.review_retry_count ??\n    review.review_retry_count ??\n    0\n  ),\n  model_route_profile: source.model_route_profile ?? review.model_route_profile ?? null,\n  selected_route_id: source.selected_route_id ?? review.selected_route_id ?? null,\n  generation_provider: source.generation_provider ?? review.generation_provider ?? null,\n  provider_model: source.provider_model ?? review.provider_model ?? null,\n  provider_cost_tier: source.provider_cost_tier ?? review.provider_cost_tier ?? null,\n  review_slot_id: source.review_slot_id ?? review.review_slot_id ?? null,\n  review_provider: source.review_provider_used ?? review.review_provider_used ?? source.review_provider ?? null,\n  review_model: source.review_model_used ?? review.review_model_used ?? source.review_model ?? null,\n  qa_evidence: {\n    schema_version: '1.0',\n    review_authority: 'n8n_structured_visual_qa',\n    pass: (source.review_pass ?? review.review_pass) === true,\n    score: Number(source.review_score ?? review.review_score ?? 0),\n    prompt_summary: String(source.review_prompt_summary ?? review.review_prompt_summary ?? ''),\n    hard_requirement_failures: source.review_hard_requirement_failures ?? review.review_hard_requirement_failures ?? [],\n    production_safety: source.review_production_safety ?? review.review_production_safety ?? null,\n    reference_asset_ids: (source.resolved_reference_inputs ?? review.resolved_reference_inputs ?? [])\n      .map((item) => item?.asset_id)\n      .filter(Boolean),\n    review_provider: source.review_provider_used ?? review.review_provider_used ?? source.review_provider ?? null,\n    review_model: source.review_model_used ?? review.review_model_used ?? source.review_model ?? null,\n    reviewed_at: new Date().toISOString()\n  },\n  accepted_at: new Date().toISOString()\n};\n\nconst statusDir = path.join(outputDir, '_status');\nfs.mkdirSync(statusDir, { recursive: true });\n\nconst statusPath = path.join(\n  statusDir,\n  `${assetId}.json`\n);\nconst statusTmp = `${statusPath}.tmp`;\n\nfs.writeFileSync(\n  statusTmp,\n  JSON.stringify(record, null, 2),\n  'utf8'\n);\nfs.renameSync(statusTmp, statusPath);\n\nreturn { json: record };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7648,
+        208
+      ],
+      "id": "183a2523-f842-45d3-9e55-d5149cfc7813",
+      "name": "记录成功资产"
+    },
+    {
+      "parameters": {
+        "jsCode": "const current = Math.max(0, Number($json.image_generation_count ?? 0));\nconst maximum = Math.max(1, Number($json.max_image_generations ?? 1));\nconst available = $json.route_available === true && current < maximum;\n\nreturn [{\n  json: {\n    ...$json,\n    generation_budget_available: available,\n    image_generation_count: available ? current + 1 : current,\n    provider_request_count: available\n      ? Number($json.provider_request_count ?? 0) + 1\n      : Number($json.provider_request_count ?? 0),\n    max_image_generations: maximum\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4736,
+        720
+      ],
+      "id": "10034636-a84c-4a9d-b4af-c4f1cc9b28c0",
+      "name": "检查并占用生图预算"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "29caec6f-2b89-42d7-85b7-54e781ec78c9",
+              "leftValue": "={{ $json.generation_budget_available }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5184,
+        672
+      ],
+      "id": "02e7d840-c838-4c19-82c0-67951d632f63",
+      "name": "是否还有生图预算"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$json,\n    final_status: 'failed_generation_budget_exhausted',\n    final_reason:\n      `模型路由方案 ${$json.model_route_profile || 'unknown'} 已达到单资产付费生图上限 ${$json.max_image_generations} 次`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7424,
+        1120
+      ],
+      "id": "6a06a175-d5c3-48da-a4ab-b1fa73e3cfe9",
+      "name": "记录生图预算耗尽"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nif (!$json.base64) {\n  throw new Error(\n    `${$json.asset_id} 缺少候选图 Base64`\n  );\n}\n\nconst outputDir =\n  $('创建任务输出目录').first().json.output_dir;\nconst candidateDir = path.join(\n  outputDir,\n  '_candidates'\n);\nfs.mkdirSync(candidateDir, { recursive: true });\n\nconst generation = Math.max(\n  1,\n  Number($json.image_generation_count ?? 1)\n);\nconst safeRoute = String($json.selected_route_id ?? 'route')\n  .replace(/[^a-zA-Z0-9_-]+/g, '_')\n  .slice(0, 60);\nconst filename =\n  `${$json.asset_id}_gen_${String(generation).padStart(2, '0')}_${safeRoute}.png`;\nconst candidatePath = path.join(\n  candidateDir,\n  filename\n);\nconst candidateTmp = `${candidatePath}.tmp`;\n\nconst buffer = Buffer.from(\n  $json.base64,\n  'base64'\n);\n\nif (!buffer.length) {\n  throw new Error(\n    `${$json.asset_id} 候选图解码后为空`\n  );\n}\n\nfs.writeFileSync(candidateTmp, buffer);\nfs.renameSync(candidateTmp, candidatePath);\n\nconst stat = fs.statSync(candidatePath);\n\nreturn [{\n  json: {\n    ...$json,\n    current_candidate_path: candidatePath,\n    current_candidate_filename: filename,\n    current_candidate_file_size: stat.size,\n    latest_usable_candidate: {\n      path: candidatePath,\n      filename,\n      file_size: stat.size,\n      generation,\n      score: null,\n      reviewed: false,\n      route_id: $json.selected_route_id ?? null,\n      provider: $json.generation_provider ?? null,\n      model: $json.provider_model ?? null,\n      cost_tier: $json.provider_cost_tier ?? null\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6976,
+        400
+      ],
+      "id": "bb6d5fa0-5eff-4316-a258-2b5841524256",
+      "name": "存档当前候选图"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nconst score = Number($json.review_score);\nconst candidatePath =\n  String($json.current_candidate_path ?? '');\n\nif (!candidatePath || !fs.existsSync(candidatePath)) {\n  throw new Error(\n    `${$json.asset_id} 缺少已存档候选图`\n  );\n}\n\nconst candidate = {\n  path: candidatePath,\n  filename:\n    $json.current_candidate_filename ?? null,\n  file_size:\n    Number($json.current_candidate_file_size ?? 0),\n  generation:\n    Number($json.image_generation_count ?? 0),\n  score:\n    Number.isFinite(score) ? score : null,\n  reviewed: true,\n  route_id: $json.selected_route_id ?? null,\n  provider: $json.generation_provider ?? null,\n  model: $json.provider_model ?? null,\n  cost_tier: $json.provider_cost_tier ?? null,\n  review_pass:\n    $json.review_pass === true,\n  review_reason:\n    String($json.review_reason ?? '').slice(0, 1000),\n  review_slot_id: $json.review_slot_id ?? null,\n  review_provider: $json.review_provider_used ?? $json.review_provider ?? null,\n  review_model: $json.review_model_used ?? $json.review_model ?? null,\n  recorded_at:\n    new Date().toISOString()\n};\n\nconst currentBest =\n  $json.best_candidate &&\n  typeof $json.best_candidate === 'object'\n    ? $json.best_candidate\n    : null;\n\nconst currentBestScore =\n  Number(currentBest?.score);\n\nconst shouldReplace =\n  !currentBest ||\n  !Number.isFinite(currentBestScore) ||\n  (\n    Number.isFinite(score) &&\n    score > currentBestScore\n  );\n\nreturn [{\n  json: {\n    ...$json,\n    best_candidate:\n      shouldReplace\n        ? candidate\n        : currentBest,\n    latest_usable_candidate:\n      candidate\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2720,
+        816
+      ],
+      "id": "18e475fa-b769-4042-871d-1e8b556a9ad8",
+      "name": "更新最佳候选状态"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\n\nconst source = $json;\nconst outputDir =\n  $('创建任务输出目录').first().json.output_dir;\n\nconst options = [\n  source.best_candidate,\n  source.latest_usable_candidate,\n  source.current_candidate_path\n    ? {\n        path: source.current_candidate_path,\n        filename:\n          source.current_candidate_filename ?? null,\n        file_size:\n          Number(source.current_candidate_file_size ?? 0),\n        generation:\n          Number(source.image_generation_count ?? 0),\n        score: null,\n        reviewed: false\n      }\n    : null\n]\n  .filter(Boolean)\n  .filter((item) => {\n    const candidatePath =\n      String(item.path ?? '');\n    if (!candidatePath) return false;\n    if (!fs.existsSync(candidatePath)) return false;\n    const stat = fs.statSync(candidatePath);\n    return stat.isFile() && stat.size > 0;\n  });\n\noptions.sort((a, b) => {\n  const scoreA =\n    a.score !== null &&\n    a.score !== undefined &&\n    Number.isFinite(Number(a.score))\n      ? Number(a.score)\n      : -1;\n  const scoreB =\n    b.score !== null &&\n    b.score !== undefined &&\n    Number.isFinite(Number(b.score))\n      ? Number(b.score)\n      : -1;\n  if (scoreB !== scoreA) return scoreB - scoreA;\n  return Number(b.generation ?? 0) -\n    Number(a.generation ?? 0);\n});\n\nconst chosen = options[0] ?? null;\n\nif (!chosen) {\n  return [{\n    json: {\n      ...source,\n      final_status:\n        'failed_no_usable_candidate',\n      final_reason:\n        source.final_reason ||\n        source.review_api_error ||\n        '预算耗尽且没有任何可读候选图片'\n    }\n  }];\n}\n\nconst filename =\n  String(source.filename ?? '').trim();\nconst assetId =\n  String(source.asset_id ?? '').trim();\n\nif (!filename || !assetId) {\n  throw new Error(\n    '选择最佳候选失败：缺少 filename 或 asset_id'\n  );\n}\n\nconst destination = path.resolve(\n  outputDir,\n  filename\n);\nconst safeRoot = path.resolve(outputDir) + path.sep;\n\nif (!destination.startsWith(safeRoot)) {\n  throw new Error(\n    `最终图片路径超出任务目录：${destination}`\n  );\n}\n\nconst destinationTmp = `${destination}.fallback.tmp`;\nif (fs.existsSync(destinationTmp)) {\n  fs.unlinkSync(destinationTmp);\n}\n\nfs.copyFileSync(chosen.path, destinationTmp);\nfs.renameSync(destinationTmp, destination);\n\nconst stat = fs.statSync(destination);\nconst hash = crypto\n  .createHash('sha256')\n  .update(fs.readFileSync(destination))\n  .digest('hex');\nconst boundHash = `sha256:${hash}`;\n\nconst hasScore =\n  chosen.score !== null &&\n  chosen.score !== undefined &&\n  Number.isFinite(Number(chosen.score));\n\nconst finalStatus = hasScore\n  ? 'accepted_fallback'\n  : 'accepted_fallback_unreviewed';\n\nconst record = {\n  project_id: String(source.project_id ?? ''),\n  job_id: String(source.job_id ?? ''),\n  asset_index:\n    Number(source.asset_index ?? 0),\n  asset_id: assetId,\n  parent_asset_id: source.parent_asset_id ?? null,\n  family_id: source.family_id ?? null,\n  asset_code: source.asset_code ?? null,\n  generation_stage: source.generation_stage ?? 'derived',\n  payload_sha256: source.payload_sha256 ?? null,\n  asset_role: source.asset_role ?? null,\n  asset_kind: source.asset_kind ?? null,\n  angle_id: source.angle_id ?? null,\n  layout_type: source.layout_type ?? null,\n  contains_multiple_independent_assets: source.contains_multiple_independent_assets === true,\n  category:\n    String(source.category ?? 'other'),\n  aspect_ratio: source.aspect_ratio ?? null,\n  lock_id: source.lock_id ?? null,\n  lock_hash: source.lock_hash ?? null,\n  prompt_policy: source.prompt_policy ?? null,\n  anchor_roles: source.anchor_roles ?? [],\n  depends_on: source.depends_on ?? [],\n  reference_inputs: source.reference_inputs ?? [],\n  reference_images: source.reference_images ?? [],\n  resolved_reference_inputs: source.resolved_reference_inputs ?? [],\n  reference_registry_path: source.reference_registry_path ?? null,\n  name:\n    String(source.name ?? assetId),\n  filename,\n  relative_path: filename,\n  final_status: finalStatus,\n  acceptance_mode: hasScore\n    ? 'best_scored_candidate'\n    : 'latest_unreviewed_candidate',\n  file_size: stat.size,\n  sha256: boundHash,\n  review_score: hasScore\n    ? Number(chosen.score)\n    : null,\n  image_generation_count:\n    Number(source.image_generation_count ?? 0),\n  review_retry_count:\n    Number(source.review_retry_count ?? 0),\n  fallback_reason:\n    source.final_reason ||\n    source.review_api_error ||\n    source.review_reason ||\n    '严格质检预算耗尽，采用最接近提示词的可用候选图',\n  selected_candidate: {\n    path: chosen.path,\n    filename: chosen.filename ?? null,\n    generation:\n      Number(chosen.generation ?? 0),\n    score: hasScore\n      ? Number(chosen.score)\n      : null,\n    reviewed:\n      chosen.reviewed === true,\n    route_id: chosen.route_id ?? null,\n    provider: chosen.provider ?? null,\n    model: chosen.model ?? null,\n    cost_tier: chosen.cost_tier ?? null\n  },\n  model_route_profile: source.model_route_profile ?? null,\n  selected_route_id: chosen.route_id ?? source.selected_route_id ?? null,\n  generation_provider: chosen.provider ?? source.generation_provider ?? null,\n  provider_model: chosen.model ?? source.provider_model ?? null,\n  provider_cost_tier: chosen.cost_tier ?? source.provider_cost_tier ?? null,\n  review_slot_id: chosen.review_slot_id ?? source.review_slot_id ?? null,\n  review_provider: chosen.review_provider ?? source.review_provider_used ?? source.review_provider ?? null,\n  review_model: chosen.review_model ?? source.review_model_used ?? source.review_model ?? null,\n  qa_evidence: {\n    schema_version: '1.0',\n    review_authority: 'n8n_structured_visual_qa',\n    pass: false,\n    score: hasScore ? Number(chosen.score) : null,\n    prompt_summary: String(source.review_prompt_summary ?? ''),\n    hard_requirement_failures: source.review_hard_requirement_failures ?? [],\n    production_safety: source.review_production_safety ?? null,\n    reference_asset_ids: (source.resolved_reference_inputs ?? [])\n      .map((item) => item?.asset_id)\n      .filter(Boolean),\n    review_provider: chosen.review_provider ?? source.review_provider_used ?? source.review_provider ?? null,\n    review_model: chosen.review_model ?? source.review_model_used ?? source.review_model ?? null,\n    reviewed_at: new Date().toISOString(),\n    failure_reason: source.final_reason || source.review_api_error || source.review_reason || 'strict_review_not_passed'\n  },\n  accepted_at:\n    new Date().toISOString()\n};\n\nconst statusDir = path.join(outputDir, '_status');\nfs.mkdirSync(statusDir, { recursive: true });\n\nconst statusPath = path.join(\n  statusDir,\n  `${assetId}.json`\n);\nconst statusTmp = `${statusPath}.tmp`;\n\nfs.writeFileSync(\n  statusTmp,\n  JSON.stringify(record, null, 2),\n  'utf8'\n);\nfs.renameSync(statusTmp, statusPath);\n\nreturn [{ json: record }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7648,
+        1264
+      ],
+      "id": "efcc3d78-c74b-460d-b472-9c7ac5979537",
+      "name": "选择最佳候选并完成资产"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n  const path = require('path');\n\n  const claim = $('领取一个待处理资产').first().json;\n  const source = $json ?? {};\n  const outputDir = claim.output_dir;\n  const assetId = String(claim.asset_id ?? source.asset_id ?? '').trim();\n  const filename = String(claim.filename ?? source.filename ?? '').trim();\n  if (!assetId || !filename) throw new Error('完成资产任务缺少 asset_id 或 filename');\n\n  function atomicJson(filePath, value) {\n    const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n    fs.renameSync(tmp, filePath);\n  }\n\n  const record = claim.skip_generation && claim.existing_status\n    ? claim.existing_status\n    : source;\n  const finalStatus = String(record.final_status ?? 'failed_unknown');\n  const usable = [\n    'accepted', 'accepted_fallback', 'accepted_fallback_unreviewed'\n  ].includes(finalStatus);\n\n  const compact = {\n    schema_version: '2.0',\n    project_id: claim.project_id,\n    job_id: claim.job_id,\n    asset_index: Number(claim.asset_index ?? 0),\n    asset_id: assetId,\n    parent_asset_id: claim.parent_asset_id ?? record.parent_asset_id ?? null,\n    family_id: claim.family_id ?? record.family_id ?? null,\n    asset_code: claim.asset_code ?? record.asset_code ?? null,\n    generation_stage: claim.generation_stage ?? record.generation_stage ?? 'derived',\n    payload_sha256: claim.payload_sha256 ?? record.payload_sha256 ?? null,\n    asset_role: claim.asset_role ?? record.asset_role ?? null,\n    asset_kind: claim.asset_kind ?? record.asset_kind ?? null,\n    angle_id: claim.angle_id ?? record.angle_id ?? null,\n    layout_type: claim.layout_type ?? record.layout_type ?? null,\n    contains_multiple_independent_assets: (claim.contains_multiple_independent_assets ?? record.contains_multiple_independent_assets) === true,\n    category: String(claim.category ?? 'other'),\n    aspect_ratio: claim.aspect_ratio ?? record.aspect_ratio ?? null,\n    lock_id: claim.lock_id ?? record.lock_id ?? null,\n    lock_hash: claim.lock_hash ?? record.lock_hash ?? null,\n    prompt_policy: claim.prompt_policy ?? record.prompt_policy ?? null,\n    anchor_roles: claim.anchor_roles ?? record.anchor_roles ?? [],\n    depends_on: claim.depends_on ?? record.depends_on ?? [],\n    reference_inputs: claim.reference_inputs ?? record.reference_inputs ?? [],\n    reference_images: claim.reference_images ?? record.reference_images ?? [],\n    resolved_reference_inputs: claim.resolved_reference_inputs ?? record.resolved_reference_inputs ?? [],\n    reference_registry_path: claim.reference_registry_path ?? record.reference_registry_path ?? null,\n    name: String(claim.name ?? assetId),\n    filename,\n    relative_path: usable ? filename : null,\n    final_status: finalStatus,\n    acceptance_mode: record.acceptance_mode ?? null,\n    review_score:\n      record.review_score !== null &&\n      record.review_score !== undefined &&\n      Number.isFinite(Number(record.review_score))\n        ? Number(record.review_score)\n        : null,\n    image_generation_count: Number(\n      record.image_generation_count ?? claim.image_generation_count ?? 0\n    ),\n    review_retry_count: Number(\n      record.review_retry_count ?? claim.review_retry_count ?? 0\n    ),\n    qa_evidence: record.qa_evidence ?? null,\n    file_size: usable ? Number(record.file_size ?? 0) : 0,\n    sha256: usable ? String(record.sha256 ?? '') : null,\n    fallback_reason: record.fallback_reason ?? null,\n    model_route_profile: record.model_route_profile ?? claim.model_route_profile ?? null,\n    selected_route_id: record.selected_route_id ?? claim.selected_route_id ?? null,\n    generation_provider: record.generation_provider ?? claim.generation_provider ?? null,\n    provider_model: record.provider_model ?? claim.provider_model ?? null,\n    provider_cost_tier: record.provider_cost_tier ?? claim.provider_cost_tier ?? null,\n    final_reason:\n      record.final_reason ??\n      record.review_api_error ??\n      record.review_reason ??\n      (usable ? null : '资产处理未成功完成'),\n    worker_execution_count: Number(claim.worker_execution_count ?? 1),\n    completed_at: new Date().toISOString(),\n  };\n\n  const statusDir = path.join(outputDir, '_status');\n  const doneDir = path.join(outputDir, '_queue_done');\n  const logsDir = path.join(outputDir, '_logs');\n  fs.mkdirSync(statusDir, { recursive: true });\n  fs.mkdirSync(doneDir, { recursive: true });\n  fs.mkdirSync(logsDir, { recursive: true });\n\n  atomicJson(path.join(statusDir, `${assetId}.json`), compact);\n  atomicJson(\n    path.join(logsDir, `worker_${assetId}_${Date.now()}.json`),\n    compact\n  );\n\n  const runningPath = String(claim.running_task_path ?? '');\n  if (runningPath && fs.existsSync(runningPath)) {\n    const donePath = path.join(doneDir, `${assetId}.json`);\n    fs.renameSync(runningPath, donePath);\n  }\n\n  const slotPath = String(claim.worker_slot_path ?? '');\n  if (slotPath && fs.existsSync(slotPath)) {\n    try {\n      const slot = JSON.parse(fs.readFileSync(slotPath, 'utf8'));\n      if (!slot.lease_id || !claim.lease_id || slot.lease_id === claim.lease_id) {\n        fs.unlinkSync(slotPath);\n      }\n    } catch {\n      // 槽位已被租约恢复器处理时无需重复释放。\n    }\n  }\n\n  return [{\n    json: {\n      event: 'n8n_single_asset_finished',\n      project_id: claim.project_id,\n      job_id: claim.job_id,\n      asset_id: assetId,\n      filename,\n      final_status: finalStatus,\n      usable,\n      image_generation_count: compact.image_generation_count,\n      review_score: compact.review_score,\n    }\n  }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7872,
+        1264
+      ],
+      "id": "111a1771-4b24-4a1e-810a-6e539f962915",
+      "name": "完成并归档单资产任务"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ea30fca9-3b4e-48a0-b5a1-5ca516f9191c",
+              "leftValue": "={{ $json.resume_stage }}",
+              "rightValue": "review",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "92036309-f236-4961-a63a-0dd4515d9ab6",
+      "name": "是否继续质检已落盘候选",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        704,
+        1840
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst source = $json ?? {};\nconst candidatePath = String(\n  source.current_candidate_path ??\n  source.latest_usable_candidate?.path ??\n  source.best_candidate?.path ??\n  ''\n).trim();\nconst outputDir = String(source.output_dir ?? '').trim();\n\nif (!candidatePath || !outputDir) {\n  throw new Error('恢复质检失败：缺少候选图路径或任务目录');\n}\n\nconst absolutePath = path.resolve(candidatePath);\nconst safeRoot = path.resolve(outputDir) + path.sep;\nif (!absolutePath.startsWith(safeRoot)) {\n  throw new Error(`恢复质检失败：候选图超出任务目录 ${absolutePath}`);\n}\nif (!fs.existsSync(absolutePath)) {\n  throw new Error(`恢复质检失败：候选图不存在 ${absolutePath}`);\n}\n\nconst buffer = fs.readFileSync(absolutePath);\nif (buffer.length === 0) {\n  throw new Error(`恢复质检失败：候选图为空 ${absolutePath}`);\n}\n\nlet mimeType = source.mime_type || 'image/jpeg';\nif (buffer.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') {\n  mimeType = 'image/png';\n} else if (buffer[0] === 0xff && buffer[1] === 0xd8) {\n  mimeType = 'image/jpeg';\n}\n\nreturn [{\n  json: {\n    ...source,\n    base64: buffer.toString('base64'),\n    mime_type: mimeType,\n    success: true,\n    resume_stage: 'review'\n  }\n}];"
+      },
+      "id": "fe6535b7-4f65-4bcd-a85c-345b56614594",
+      "name": "载入候选图继续质检",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        928,
+        1744
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $json ?? {};\nconst current = Math.max(0, Number(source.image_generation_count ?? 0));\nconst maximum = Math.max(1, Number(source.max_image_generations ?? 1));\nconst plan = Array.isArray(source.model_route_plan)\n  ? source.model_route_plan\n  : [];\n\nconst route = current < maximum ? (plan[current] ?? null) : null;\n\nreturn [{\n  json: {\n    ...source,\n    route_available: Boolean(route),\n    selected_route_id: route?.route_id ?? null,\n    generation_provider: route?.provider ?? null,\n    provider_model: route?.model ?? null,\n    provider_cost_tier: route?.cost_tier ?? 'unknown',\n    provider_options: route?.options ?? {},\n    route_attempt_index: route ? current + 1 : current,\n    route_plan_length: plan.length\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4512,
+        720
+      ],
+      "id": "ada79621-a635-422a-9f33-d23f451dd22a",
+      "name": "选择本轮模型路由"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n\nconst incoming = $json ?? {};\n\nfunction renewLease(source, leaseMs) {\n  const slotPath = String(source.worker_slot_path ?? '').trim();\n  const runningPath = String(source.running_task_path ?? '').trim();\n  if (!slotPath || !runningPath || !fs.existsSync(slotPath) || !fs.existsSync(runningPath)) {\n    throw new Error('准备生图失败：Worker 槽位或运行任务租约已丢失');\n  }\n  const expiresAt = new Date(Date.now() + leaseMs).toISOString();\n  function updateOwnedFile(filePath, mutate, label) {\n    const fd = fs.openSync(filePath, 'r+');\n    try {\n      const live = JSON.parse(fs.readFileSync(fd, 'utf8'));\n      if (live.lease_id && source.lease_id && live.lease_id !== source.lease_id) {\n        throw new Error(`${label}已被其他执行持有`);\n      }\n      const buffer = Buffer.from(JSON.stringify(mutate(live), null, 2), 'utf8');\n      fs.ftruncateSync(fd, 0);\n      fs.writeSync(fd, buffer, 0, buffer.length, 0);\n      fs.fsyncSync(fd);\n    } finally {\n      fs.closeSync(fd);\n    }\n  }\n  updateOwnedFile(slotPath, (slot) => ({ ...slot, state: 'generating', expires_at: expiresAt }), 'Worker 槽位');\n  updateOwnedFile(runningPath, (task) => ({ ...task, lease_expires_at: expiresAt }), '资产租约');\n  return expiresAt;\n}\n\nconst {\n  base64: _oldBase64,\n  mime_type: _oldMimeType,\n  provider_text: _oldProviderText,\n  success: _oldSuccess,\n  requestBody: _oldGenerationBody,\n  review_request_body: _oldReviewBody,\n  current_candidate_path: _oldCandidatePath,\n  current_candidate_filename: _oldCandidateFilename,\n  current_candidate_file_size: _oldCandidateSize,\n  review_positive_requirements: _oldPositiveRequirements,\n  review_negative_requirements: _oldNegativeRequirements,\n  review_prompt_summary: _oldPromptSummary,\n  ...asset\n} = incoming;\n\nif (!asset.generation_provider || !asset.provider_model || !asset.selected_route_id) {\n  throw new Error('本轮模型路由不完整，禁止发送付费生图请求');\n}\n\nconst referenceImages = Array.isArray(asset.reference_images)\n  ? asset.reference_images\n  : [];\nif (\n  referenceImages.length > 0 &&\n  !['google_gemini', 'openai_images'].includes(asset.generation_provider)\n) {\n  throw new Error(\n    '当前资产携带 reference_images；本轮只允许进入已实现真实多图输入的 Gemini B 或 OpenAI Images C'\n  );\n}\n\nconst leaseExpiresAt = renewLease(asset, 25 * 60 * 1000);\nconst promptParts = [];\nif (asset.prompt_zh) promptParts.push(asset.prompt_zh);\nelse if (asset.prompt_en) promptParts.push(asset.prompt_en);\nif (asset.negative_prompt) promptParts.push(`以下内容必须避免出现：${asset.negative_prompt}`);\nif (asset.qa_feedback) {\n  promptParts.push(\n    '上一轮图片未通过质检。保持主体身份、场景和整体风格不变，' +\n    `重点修正以下问题：${asset.qa_feedback}`\n  );\n}\n\nconst resolvedReferenceInputs = Array.isArray(asset.resolved_reference_inputs)\n  ? asset.resolved_reference_inputs\n  : [];\nif (resolvedReferenceInputs.length > 0) {\n  const roleLines = resolvedReferenceInputs.map((item, index) => {\n    const source = item.asset_id ? `asset_id=${item.asset_id}` : `path=${item.path}`;\n    return `参考图${index + 1}：role=${item.role || 'reference'}，${source}。`;\n  });\n  promptParts.push([\n    '【参考图职责】',\n    ...roleLines,\n    '必须严格按照各参考图的职责保持同一人物身份、同一场景空间、同一道具结构或同一风格；',\n    '不要复制参考图的摄影机角度，除非当前提示词明确要求相同机位；',\n    '参考图中未展示的背面或遮挡区域可以合理补全，但不得修改已展示的关键结构和非对称识别特征。'\n  ].join('\\n'));\n}\n\nconst allowedRatios = ['1:1','2:3','3:2','3:4','4:3','4:5','5:4','9:16','16:9','21:9'];\nconst aspectRatio = allowedRatios.includes(String(asset.aspect_ratio ?? '16:9'))\n  ? String(asset.aspect_ratio)\n  : '16:9';\nconst configuredSize = String(asset.provider_options?.image_size ?? asset.image_size ?? '2K').toUpperCase();\nconst imageSize = ['1K','2K','4K'].includes(configuredSize) ? configuredSize : '2K';\n\npromptParts.push(`画布必须采用${aspectRatio}比例，输出清晰度为${imageSize}。`);\npromptParts.push('只生成一张独立、完整的资产图片；不要输出解释文字；不要出现水印、Logo、边框或无关文字。');\n\nreturn [{\n  json: {\n    ...asset,\n    lease_expires_at: leaseExpiresAt,\n    aspect_ratio: aspectRatio,\n    effective_image_size: imageSize,\n    generation_prompt: promptParts.join('\\n\\n')\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5408,
+        592
+      ],
+      "id": "50531cc4-ef3a-4c02-aa38-65ae97bac8e1",
+      "name": "续租并准备通用生图提示词"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1ed29997-0004-4c56-8189-959eba4cc6ad",
+              "leftValue": "={{ $json.generation_provider }}",
+              "rightValue": "volcengine_ark",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5632,
+        592
+      ],
+      "id": "5a447e7c-f4da-45ed-ab88-cdfadb1743dc",
+      "name": "是否使用火山方舟"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5d28637e-a766-47ac-a036-d8798998191b",
+              "leftValue": "={{ $json.generation_provider }}",
+              "rightValue": "google_gemini",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5856,
+        720
+      ],
+      "id": "5284841d-503b-4f8c-9e36-b2235ee3f1b3",
+      "name": "是否使用 Google Gemini"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\n\nconst ROOT = path.resolve(String($env.OPENCLAW_ASSET_SHARED_ROOT || '/data/openclaw-assets'));\nconst isLite = /flash-lite-image/i.test(String($json.provider_model ?? ''));\nconst imageSize = isLite ? '1K' : $json.effective_image_size;\nconst referenceImages = Array.isArray($json.reference_images) ? $json.reference_images : [];\nconst maximumReferenceImages = Math.max(1, Number($json.max_reference_images ?? 2));\nif (referenceImages.length > maximumReferenceImages || referenceImages.length > 2) {\n  throw new Error(`当前Gemini多模态分支最多支持${Math.min(maximumReferenceImages, 2)}张参考图，禁止静默丢图`);\n}\nconst safeRoot = path.resolve(ROOT) + path.sep;\nconst allowedMimeTypes = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp'};\nconst loaded = [];\nconst imageParts = [];\nfor (let index = 0; index < referenceImages.length; index += 1) {\n  const resolved = path.resolve(String(referenceImages[index] ?? '').trim());\n  if (!resolved.startsWith(safeRoot)) throw new Error(`reference_images[${index}] 超出固定资产根目录`);\n  const stat = fs.statSync(resolved);\n  if (!stat.isFile() || stat.size <= 0 || stat.size > 20 * 1024 * 1024) {\n    throw new Error(`reference_images[${index}] 文件大小非法: ${stat.size}`);\n  }\n  const extension = path.extname(resolved).toLowerCase();\n  const mimeType = allowedMimeTypes[extension];\n  if (!mimeType) throw new Error(`reference_images[${index}] 格式不受支持`);\n  const data = fs.readFileSync(resolved);\n  imageParts.push({inlineData: {mimeType, data: data.toString('base64')}});\n  loaded.push({\n    path: resolved,\n    sha256: crypto.createHash('sha256').update(data).digest('hex'),\n    bytes: data.length,\n    mime_type: mimeType,\n  });\n}\nreturn [{\n  json: {\n    ...$json,\n    effective_image_size: imageSize,\n    reference_images_loaded: loaded,\n    reference_image_count: loaded.length,\n    has_reference_images: loaded.length > 0,\n    requestBody: {\n      contents: [{parts: [...imageParts, {text: $json.generation_prompt}]}],\n      generationConfig: {\n        responseModalities: ['IMAGE'],\n        imageConfig: {aspectRatio: $json.aspect_ratio, imageSize}\n      }\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6080,
+        624
+      ],
+      "id": "32b635fa-7b31-43bc-9056-fb2ca4284762",
+      "name": "准备槽位 B｜Google Gemini 请求"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1/models/{{ $json.provider_model }}:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {
+          "timeout": 1200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6304,
+        624
+      ],
+      "id": "be084b9a-9fef-4a26-a679-0d553578b835",
+      "name": "模型槽位 B｜Google Gemini（在这里选择凭证）",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "A3Gp6P8t6QxrV3di",
+          "name": "Gemini 图片生成"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawMeta = $('准备槽位 B｜Google Gemini 请求').first().json;\nconst response = $json ?? {};\nconst {\n  requestBody: _requestBody,\n  generation_prompt: _generationPrompt,\n  review_request_body: _reviewBody,\n  base64: _oldBase64,\n  mime_type: _oldMimeType,\n  success: _oldSuccess,\n  ...meta\n} = rawMeta;\n\nconst parts = response.candidates?.[0]?.content?.parts ?? [];\nconst imagePart = parts.find((part) => (part.inlineData || part.inline_data) && !part.thought);\nconst inline = imagePart?.inlineData ?? imagePart?.inline_data;\nconst base64 = inline?.data ?? null;\nconst responseMime = inline?.mimeType ?? inline?.mime_type ?? null;\n\nlet mimeType = responseMime || 'image/png';\nif (typeof base64 === 'string' && base64.startsWith('/9j/')) mimeType = 'image/jpeg';\nelse if (typeof base64 === 'string' && base64.startsWith('iVBORw0KGgo')) mimeType = 'image/png';\n\nconst providerError = response.error?.message ?? response.error?.code ?? response.message ?? null;\nconst errorText = String(providerError ?? '');\nconst statusMatch = errorText.match(/\\b(4\\d\\d|5\\d\\d)\\b/);\nconst providerStatus = Number(\n  response.error?.status ?? response.error?.statusCode ?? response.statusCode ?? statusMatch?.[1] ?? 0\n);\nconst providerCode = String(response.error?.code ?? response.code ?? '').trim();\nlet providerErrorKind = null;\nif (!base64) {\n  if ([401,403].includes(providerStatus)) providerErrorKind = 'authentication';\n  else if (providerStatus === 429 || /rate.?limit|too many requests/i.test(errorText)) providerErrorKind = 'rate_limit';\n  else if ([408,504].includes(providerStatus) || /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(errorText)) providerErrorKind = 'timeout_unknown';\n  else if (providerStatus >= 500) providerErrorKind = 'server_error';\n  else if (providerStatus >= 400) providerErrorKind = 'request_error';\n  else if (errorText) providerErrorKind = 'network_or_provider_error';\n  else providerErrorKind = 'empty_response';\n}\n\nreturn [{\n  json: {\n    ...meta,\n    success: Boolean(base64),\n    base64,\n    mime_type: mimeType,\n    provider_text: providerError ? String(providerError) : null,\n    provider_status: Number.isFinite(providerStatus) ? providerStatus : 0,\n    provider_code: providerCode || null,\n    provider_error_kind: providerErrorKind,\n    generation_provider: 'google_gemini',\n    provider_model: response.model ?? meta.provider_model,\n    provider_usage: response.usage ?? response.usageMetadata ?? null,\n    retry_count: base64 ? 0 : Number(meta.retry_count ?? 0),\n    provider_transport_retry_count: base64 ? 0 : Number(meta.provider_transport_retry_count ?? 0)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6528,
+        624
+      ],
+      "id": "52a16418-2728-4bb0-9c5c-434af4c46023",
+      "name": "解析槽位 B｜Google Gemini 结果"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\n\nconst ROOT = path.resolve(String($env.OPENCLAW_ASSET_SHARED_ROOT || '/data/openclaw-assets'));\nconst sizeMap = {\n  '1:1': '1024x1024',\n  '2:3': '1024x1536',\n  '3:2': '1536x1024',\n  '3:4': '1024x1536',\n  '4:3': '1536x1024',\n  '4:5': '1024x1536',\n  '5:4': '1536x1024',\n  '9:16': '1024x1536',\n  '16:9': '1536x1024',\n  '21:9': '1536x1024'\n};\n\nconst quality = ['low','medium','high','auto'].includes(\n  String($json.provider_options?.quality ?? 'low')\n)\n  ? String($json.provider_options?.quality ?? 'low')\n  : 'low';\n\nconst requestBody = {\n  model: $json.provider_model,\n  prompt: $json.generation_prompt,\n  n: 1,\n  size: sizeMap[$json.aspect_ratio] ?? '1536x864',\n  quality,\n  background: String($json.provider_options?.background ?? 'opaque'),\n  output_format: String($json.provider_options?.output_format ?? 'png')\n};\n\nconst referenceImages = Array.isArray($json.reference_images)\n  ? $json.reference_images\n  : [];\n\nif (referenceImages.length === 0) {\n  return [{\n    json: {\n      ...$json,\n      requestBody,\n      openai_endpoint: 'https://api.openai.com/v1/images/generations',\n      openai_body_content_type: 'json',\n      reference_images_loaded: [],\n      reference_image_count: 0,\n      has_reference_images: false,\n      multipart_transport: null,\n      multipart_body_path: null,\n      multipart_body_bytes: 0\n    }\n  }];\n}\n\nconst maximumReferenceImages = Math.max(1, Number($json.max_reference_images ?? 2));\nif (referenceImages.length > maximumReferenceImages || referenceImages.length > 2) {\n  throw new Error(`当前OpenAI原生multipart分支最多支持${Math.min(maximumReferenceImages, 2)}张参考图，禁止静默丢图`);\n}\n\nconst safeRoot = path.resolve(ROOT) + path.sep;\nconst allowedMimeTypes = {\n  '.png': 'image/png',\n  '.jpg': 'image/jpeg',\n  '.jpeg': 'image/jpeg',\n  '.webp': 'image/webp'\n};\nconst loaded = [];\nconst binary = {};\nlet totalBytes = 0;\n\nfor (let index = 0; index < referenceImages.length; index += 1) {\n  const resolved = path.resolve(String(referenceImages[index] ?? '').trim());\n  if (!resolved.startsWith(safeRoot)) {\n    throw new Error(`reference_images[${index}] 超出固定资产根目录`);\n  }\n  const stat = fs.statSync(resolved);\n  if (!stat.isFile() || stat.size <= 0 || stat.size > 20 * 1024 * 1024) {\n    throw new Error(`reference_images[${index}] 文件大小非法: ${stat.size}`);\n  }\n  const extension = path.extname(resolved).toLowerCase();\n  const mimeType = allowedMimeTypes[extension];\n  if (!mimeType) {\n    throw new Error(`reference_images[${index}] 格式不受支持`);\n  }\n  const data = fs.readFileSync(resolved);\n  const propertyName = `reference_image_${index + 1}`;\n  binary[propertyName] = {\n    data: data.toString('base64'),\n    mimeType,\n    fileType: 'image',\n    fileName: path.basename(resolved).replace(/[\"\\r\\n]/g, '_'),\n    fileExtension: extension.slice(1),\n  };\n  loaded.push({\n    path: resolved,\n    sha256: crypto.createHash('sha256').update(data).digest('hex'),\n    bytes: data.length,\n    mime_type: mimeType,\n    binary_property: propertyName,\n  });\n  totalBytes += data.length;\n}\n\nreturn [{\n  json: {\n    ...$json,\n    requestBody,\n    openai_endpoint: 'https://api.openai.com/v1/images/edits',\n    openai_body_content_type: 'multipart-form-data',\n    reference_images_loaded: loaded,\n    reference_image_count: loaded.length,\n    has_reference_images: true,\n    multipart_transport: 'n8n_native_form_fields',\n    multipart_body_path: null,\n    multipart_body_bytes: totalBytes\n  },\n  binary\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6080,
+        816
+      ],
+      "id": "164e8971-490d-4976-8f5f-fa98d0b9b0a4",
+      "name": "准备槽位 C｜OpenAI Images 请求"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.openai_endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": false,
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {
+          "timeout": 1200000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6752,
+        816
+      ],
+      "id": "5d0ea85d-5f11-4703-b60c-4bf61568db55",
+      "name": "模型槽位 C｜OpenAI Images（在这里选择凭证）",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NGO7CTSDa7u3wmjC",
+          "name": "OpenAI Images API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst rawMeta = $('准备槽位 C｜OpenAI Images 请求').first().json;\nconst response = $json ?? {};\nconst multipartBodyPath = String(rawMeta.multipart_body_path ?? '').trim();\nif (multipartBodyPath) {\n  const resolved = path.resolve(multipartBodyPath);\n  const expectedRoot = path.resolve(String(rawMeta.output_dir ?? ''), '_request_bodies') + path.sep;\n  if (resolved.startsWith(expectedRoot) && fs.existsSync(resolved)) {\n    try { fs.unlinkSync(resolved); } catch {}\n  }\n}\n\nconst {\n  requestBody: _requestBody,\n  generation_prompt: _generationPrompt,\n  review_request_body: _reviewBody,\n  multipart_body_path: _multipartBodyPath,\n  base64: _oldBase64,\n  mime_type: _oldMimeType,\n  success: _oldSuccess,\n  ...meta\n} = rawMeta;\n\nconst firstImage = Array.isArray(response.data) && response.data.length ? response.data[0] : null;\nconst base64 = firstImage?.b64_json ?? firstImage?.base64 ?? null;\nconst responseMime = firstImage?.mime_type ?? null;\n\nlet mimeType = responseMime || 'image/png';\nif (typeof base64 === 'string' && base64.startsWith('/9j/')) mimeType = 'image/jpeg';\nelse if (typeof base64 === 'string' && base64.startsWith('iVBORw0KGgo')) mimeType = 'image/png';\n\nconst providerError = response.error?.message ?? response.error?.code ?? response.message ?? null;\nconst errorText = String(providerError ?? '');\nconst statusMatch = errorText.match(/\\b(4\\d\\d|5\\d\\d)\\b/);\nconst providerStatus = Number(\n  response.error?.status ?? response.error?.statusCode ?? response.statusCode ?? statusMatch?.[1] ?? 0\n);\nconst providerCode = String(response.error?.code ?? response.code ?? '').trim();\nlet providerErrorKind = null;\nif (!base64) {\n  if ([401,403].includes(providerStatus)) providerErrorKind = 'authentication';\n  else if (providerStatus === 429 || /rate.?limit|too many requests/i.test(errorText)) providerErrorKind = 'rate_limit';\n  else if ([408,504].includes(providerStatus) || /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(errorText)) providerErrorKind = 'timeout_unknown';\n  else if (providerStatus >= 500) providerErrorKind = 'server_error';\n  else if (providerStatus >= 400) providerErrorKind = 'request_error';\n  else if (errorText) providerErrorKind = 'network_or_provider_error';\n  else providerErrorKind = 'empty_response';\n}\n\nreturn [{\n  json: {\n    ...meta,\n    success: Boolean(base64),\n    base64,\n    mime_type: mimeType,\n    provider_text: providerError ? String(providerError) : null,\n    provider_status: Number.isFinite(providerStatus) ? providerStatus : 0,\n    provider_code: providerCode || null,\n    provider_error_kind: providerErrorKind,\n    generation_provider: 'openai_images',\n    provider_model: response.model ?? meta.provider_model,\n    provider_usage: response.usage ?? response.usageMetadata ?? null,\n    retry_count: base64 ? 0 : Number(meta.retry_count ?? 0),\n    provider_transport_retry_count: base64 ? 0 : Number(meta.provider_transport_retry_count ?? 0)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6976,
+        816
+      ],
+      "id": "c8976e19-4e6d-48bf-8d5c-ae886efff465",
+      "name": "解析槽位 C｜OpenAI Images 结果"
+    },
+    {
+      "parameters": {
+        "content": "## 图片模型与参考图路由\n\n- 槽位 A：火山方舟，当前仅文字生图\n- 槽位 B：Google Gemini，当前仅文字生图\n- 槽位 C：OpenAI Images，支持文字生图与1—2张参考图 Edit\n\n只要资产含 reference_inputs 或 reference_images，总控会自动把生图路由锁定到槽位 C，防止参考图被静默丢弃。\n\n质检 G/O/V 三条分支均会同时接收待审图和已解析参考图，用于连续性检查。",
+        "height": 508,
+        "width": 1160,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1008,
+        0
+      ],
+      "id": "4e40756a-cd6e-4b70-90ad-a2c300f085d7",
+      "name": "多模型路由说明"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dcc8a391-91e2-4d3e-98e9-5e2e009be2ba",
+              "leftValue": "={{ $json.review_slot_id }}",
+              "rightValue": "G",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1376,
+        1008
+      ],
+      "id": "b11ad4eb-ed78-43a7-96b4-8a2162d6a3dd",
+      "name": "质检槽位是否 G"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e224282c-519c-441f-9117-8fc12d8296f9",
+              "leftValue": "={{ $json.review_slot_id }}",
+              "rightValue": "O",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1600,
+        1488
+      ],
+      "id": "6c43e910-6ff8-4e08-9159-9740775386d3",
+      "name": "质检槽位是否 O"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.review_request_body }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1824,
+        1392
+      ],
+      "id": "e4dbbe71-6bdf-4e2b-ba6f-8207f0f11010",
+      "name": "质检槽位 O｜OpenAI Vision（在这里选择凭证）",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NGO7CTSDa7u3wmjC",
+          "name": "OpenAI Images API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.review_request_body }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1824,
+        1632
+      ],
+      "id": "f1b19f14-9f7a-4598-a2ec-f92bd655fc06",
+      "name": "质检槽位 V｜火山方舟视觉（在这里选择凭证）",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "v2B8WyO1cxxW5LWZ",
+          "name": "火山方舟 Seedream"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const candidate = $json.candidates?.[0] ?? null;\nconst text = (candidate?.content?.parts ?? []).filter((p) => typeof p?.text === 'string').map((p) => p.text).join('\\n').trim();\nreturn [{ json: { __review_normalized: {\n  provider: 'google_gemini', text,\n  finish_reason: candidate?.finishReason ?? '', finish_message: candidate?.finishMessage ?? '',\n  prompt_block_reason: $json.promptFeedback?.blockReason ?? '',\n  safety_ratings: candidate?.safetyRatings ?? $json.promptFeedback?.safetyRatings ?? [],\n  usage_metadata: $json.usageMetadata ?? {},\n  error: $json.error ?? null\n} } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        816
+      ],
+      "id": "76bf8682-87e1-471c-b03a-9e74b402c3e7",
+      "name": "标准化质检槽位 G 响应"
+    },
+    {
+      "parameters": {
+        "jsCode": "const choice = $json.choices?.[0] ?? null;\nconst content = choice?.message?.content;\nconst text = typeof content === 'string' ? content.trim() : Array.isArray(content) ? content.map((p) => p?.text ?? '').join('\\n').trim() : '';\nreturn [{ json: { __review_normalized: {\n  provider: 'openai_vision', text,\n  finish_reason: choice?.finish_reason ?? '', finish_message: choice?.message?.refusal ?? '',\n  prompt_block_reason: choice?.finish_reason === 'content_filter' ? 'CONTENT_FILTER' : '',\n  safety_ratings: [], usage_metadata: $json.usage ?? {}, error: $json.error ?? null\n} } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        1392
+      ],
+      "id": "7de8e0a3-ae06-4234-a3e6-5e7722c137a1",
+      "name": "标准化质检槽位 O 响应"
+    },
+    {
+      "parameters": {
+        "jsCode": "const choice = $json.choices?.[0] ?? null;\nconst content = choice?.message?.content;\nconst text = typeof content === 'string' ? content.trim() : Array.isArray(content) ? content.map((p) => p?.text ?? '').join('\\n').trim() : '';\nreturn [{ json: { __review_normalized: {\n  provider: 'volcengine_vision', text,\n  finish_reason: choice?.finish_reason ?? '', finish_message: choice?.message?.refusal ?? '',\n  prompt_block_reason: choice?.finish_reason === 'content_filter' ? 'CONTENT_FILTER' : '',\n  safety_ratings: [], usage_metadata: $json.usage ?? {}, error: $json.error ?? null\n} } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        1632
+      ],
+      "id": "a7d9cf54-ddbb-431b-90ba-e7d2a8cb6f31",
+      "name": "标准化质检槽位 V 响应"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "54bf24b8-ae0f-4f32-8fa4-971890261002",
+              "leftValue": "={{ $json.has_reference_images }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a7ae7b4d-e3f4-45e7-9147-c6bf54088002",
+      "name": "槽位 C｜是否使用参考图",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        6304,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.openai_endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $json.requestBody.model }}"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $json.requestBody.prompt }}"
+            },
+            {
+              "name": "n",
+              "value": "={{ String($json.requestBody.n) }}"
+            },
+            {
+              "name": "size",
+              "value": "={{ $json.requestBody.size }}"
+            },
+            {
+              "name": "quality",
+              "value": "={{ $json.requestBody.quality }}"
+            },
+            {
+              "name": "background",
+              "value": "={{ $json.requestBody.background }}"
+            },
+            {
+              "name": "output_format",
+              "value": "={{ $json.requestBody.output_format }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "image[]",
+              "inputDataFieldName": "reference_image_1"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "image[]",
+              "inputDataFieldName": "reference_image_2"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6752,
+        1040
+      ],
+      "id": "72400349-3d4b-4b43-9ece-d913aaad3cdd",
+      "name": "模型槽位 C｜OpenAI Images Edit（参考图）",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NGO7CTSDa7u3wmjC",
+          "name": "OpenAI Images API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nfunction scalar(value) {\n  if (value === null || value === undefined) return null;\n  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;\n  try { return JSON.stringify(value); } catch { return String(value); }\n}\n\nfor (const item of items) {\n  const source = item.json?.error;\n  const response = source?.response;\n  const data = response?.data;\n  const own = {};\n  if (source && (typeof source === 'object' || typeof source === 'function')) {\n    for (const key of Object.getOwnPropertyNames(source)) {\n      if (['config', 'request'].includes(key)) continue;\n      if (key === 'response') continue;\n      own[key] = scalar(source[key]);\n    }\n  }\n\n  const message = source?.message\n    ?? data?.error?.message\n    ?? data?.message\n    ?? item.json?.message\n    ?? 'OpenAI Images Edit transport error without message';\n  const code = source?.code ?? data?.error?.code ?? data?.code ?? null;\n  const status = response?.status ?? source?.status ?? source?.statusCode ?? null;\n\n  item.json.error = {\n    name: source?.name ?? own.name ?? null,\n    message: String(message),\n    code: code === null ? null : String(code),\n    status,\n    statusCode: status,\n    response: response ? {\n      status: response.status ?? null,\n      statusText: response.statusText ?? null,\n      data: scalar(data),\n    } : null,\n    own_properties: own,\n  };\n  item.json.provider_transport_error_captured = true;\n}\n\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6864,
+        1200
+      ],
+      "id": "a9789e98-c0f5-420b-8408-508d5bc63b29",
+      "name": "序列化槽位 C｜OpenAI Images Edit 错误"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.openai_endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $json.requestBody.model }}"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $json.requestBody.prompt }}"
+            },
+            {
+              "name": "n",
+              "value": "={{ String($json.requestBody.n) }}"
+            },
+            {
+              "name": "size",
+              "value": "={{ $json.requestBody.size }}"
+            },
+            {
+              "name": "quality",
+              "value": "={{ $json.requestBody.quality }}"
+            },
+            {
+              "name": "background",
+              "value": "={{ $json.requestBody.background }}"
+            },
+            {
+              "name": "output_format",
+              "value": "={{ $json.requestBody.output_format }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "image[]",
+              "inputDataFieldName": "reference_image_1"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6752,
+        896
+      ],
+      "id": "14b9a2cf-6241-48c1-8dce-1e9acccc89c5",
+      "name": "模型槽位 C｜OpenAI Images Edit（1张参考图）",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NGO7CTSDa7u3wmjC",
+          "name": "OpenAI Images API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "09a4b9c4-eb55-457e-ac40-9a37250603d6",
+              "leftValue": "={{ $json.reference_image_count }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        6496,
+        976
+      ],
+      "id": "10949552-afb6-4335-ae44-cef56cb65148",
+      "name": "槽位 C｜参考图数量为1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "每30秒检查一个资产任务": {
+      "main": [
+        [
+          {
+            "node": "领取一个待处理资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "领取一个待处理资产": {
+      "main": [
+        [
+          {
+            "node": "创建任务输出目录",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "创建任务输出目录": {
+      "main": [
+        [
+          {
+            "node": "是否继续质检已落盘候选",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否已有可复用资产": {
+      "main": [
+        [
+          {
+            "node": "完成并归档单资产任务",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "选择本轮模型路由",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "检查并占用生图预算": {
+      "main": [
+        [
+          {
+            "node": "持久化生图预算状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "持久化生图预算状态": {
+      "main": [
+        [
+          {
+            "node": "是否还有生图预算",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否还有生图预算": {
+      "main": [
+        [
+          {
+            "node": "续租并准备通用生图提示词",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "记录生图预算耗尽",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "记录生图预算耗尽": {
+      "main": [
+        [
+          {
+            "node": "选择最佳候选并完成资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "准备槽位 A｜火山方舟请求": {
+      "main": [
+        [
+          {
+            "node": "模型槽位 A｜火山方舟（在这里选择凭证）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "模型槽位 A｜火山方舟（在这里选择凭证）": {
+      "main": [
+        [
+          {
+            "node": "解析槽位 A｜火山方舟结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "解析槽位 A｜火山方舟结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析槽位 A｜火山方舟结果": {
+      "main": [
+        [
+          {
+            "node": "是否成功生成图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否成功生成图片": {
+      "main": [
+        [
+          {
+            "node": "存档当前候选图",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "增加空结果重试次数",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "增加空结果重试次数": {
+      "main": [
+        [
+          {
+            "node": "空结果是否继续重试",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "空结果是否继续重试": {
+      "main": [
+        [
+          {
+            "node": "重新入队等待服务恢复",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "记录失败资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "重新入队等待服务恢复": {
+      "main": [
+        [
+          {
+            "node": "检查并占用生图预算",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "记录失败资产": {
+      "main": [
+        [
+          {
+            "node": "选择最佳候选并完成资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "存档当前候选图": {
+      "main": [
+        [
+          {
+            "node": "持久化当前候选状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "持久化当前候选状态": {
+      "main": [
+        [
+          {
+            "node": "准备图片质检请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "准备图片质检请求": {
+      "main": [
+        [
+          {
+            "node": "质检槽位是否 G",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检槽位 G｜Google Gemini（在这里选择凭证）": {
+      "main": [
+        [
+          {
+            "node": "标准化质检槽位 G 响应",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "标准化质检槽位 G 响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "统一解析质检结果": {
+      "main": [
+        [
+          {
+            "node": "质检响应是否有效",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检响应是否有效": {
+      "main": [
+        [
+          {
+            "node": "更新最佳候选状态",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "质检接口是否继续重试",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "更新最佳候选状态": {
+      "main": [
+        [
+          {
+            "node": "持久化最佳候选状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "持久化最佳候选状态": {
+      "main": [
+        [
+          {
+            "node": "图片质检是否通过",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "图片质检是否通过": {
+      "main": [
+        [
+          {
+            "node": "Base64 转图片文件",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "增加质检重试次数",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Base64 转图片文件": {
+      "main": [
+        [
+          {
+            "node": "保存资产图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "保存资产图片": {
+      "main": [
+        [
+          {
+            "node": "记录成功资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "记录成功资产": {
+      "main": [
+        [
+          {
+            "node": "完成并归档单资产任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "增加质检重试次数": {
+      "main": [
+        [
+          {
+            "node": "持久化质检重试状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "持久化质检重试状态": {
+      "main": [
+        [
+          {
+            "node": "质检是否继续重试",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检是否继续重试": {
+      "main": [
+        [
+          {
+            "node": "清理失败候选图后重生成",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "写入质检失败报告",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "清理失败候选图后重生成": {
+      "main": [
+        [
+          {
+            "node": "重新入队等待按质检意见重生成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "重新入队等待按质检意见重生成": {
+      "main": [
+        [
+          {
+            "node": "选择本轮模型路由",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "写入质检失败报告": {
+      "main": [
+        [
+          {
+            "node": "失败候选图转文件",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "失败候选图转文件": {
+      "main": [
+        [
+          {
+            "node": "保存失败候选图",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "保存失败候选图": {
+      "main": [
+        [
+          {
+            "node": "记录质检失败资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "记录质检失败资产": {
+      "main": [
+        [
+          {
+            "node": "选择最佳候选并完成资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检接口是否继续重试": {
+      "main": [
+        [
+          {
+            "node": "重新入队等待重试质检",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "记录质检接口失败资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "重新入队等待重试质检": {
+      "main": [
+        [
+          {
+            "node": "准备图片质检请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "记录质检接口失败资产": {
+      "main": [
+        [
+          {
+            "node": "选择最佳候选并完成资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "选择最佳候选并完成资产": {
+      "main": [
+        [
+          {
+            "node": "完成并归档单资产任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否继续质检已落盘候选": {
+      "main": [
+        [
+          {
+            "node": "载入候选图继续质检",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "是否已有可复用资产",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "载入候选图继续质检": {
+      "main": [
+        [
+          {
+            "node": "准备图片质检请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "选择本轮模型路由": {
+      "main": [
+        [
+          {
+            "node": "检查并占用生图预算",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "续租并准备通用生图提示词": {
+      "main": [
+        [
+          {
+            "node": "是否使用火山方舟",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否使用火山方舟": {
+      "main": [
+        [
+          {
+            "node": "准备槽位 A｜火山方舟请求",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "是否使用 Google Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "是否使用 Google Gemini": {
+      "main": [
+        [
+          {
+            "node": "准备槽位 B｜Google Gemini 请求",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "准备槽位 C｜OpenAI Images 请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "准备槽位 B｜Google Gemini 请求": {
+      "main": [
+        [
+          {
+            "node": "模型槽位 B｜Google Gemini（在这里选择凭证）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "模型槽位 B｜Google Gemini（在这里选择凭证）": {
+      "main": [
+        [
+          {
+            "node": "解析槽位 B｜Google Gemini 结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "解析槽位 B｜Google Gemini 结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析槽位 B｜Google Gemini 结果": {
+      "main": [
+        [
+          {
+            "node": "是否成功生成图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "准备槽位 C｜OpenAI Images 请求": {
+      "main": [
+        [
+          {
+            "node": "槽位 C｜是否使用参考图",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "模型槽位 C｜OpenAI Images（在这里选择凭证）": {
+      "main": [
+        [
+          {
+            "node": "解析槽位 C｜OpenAI Images 结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "解析槽位 C｜OpenAI Images 结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析槽位 C｜OpenAI Images 结果": {
+      "main": [
+        [
+          {
+            "node": "是否成功生成图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检槽位是否 G": {
+      "main": [
+        [
+          {
+            "node": "质检槽位 G｜Google Gemini（在这里选择凭证）",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "质检槽位是否 O",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检槽位是否 O": {
+      "main": [
+        [
+          {
+            "node": "质检槽位 O｜OpenAI Vision（在这里选择凭证）",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "质检槽位 V｜火山方舟视觉（在这里选择凭证）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检槽位 O｜OpenAI Vision（在这里选择凭证）": {
+      "main": [
+        [
+          {
+            "node": "标准化质检槽位 O 响应",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "标准化质检槽位 O 响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "质检槽位 V｜火山方舟视觉（在这里选择凭证）": {
+      "main": [
+        [
+          {
+            "node": "标准化质检槽位 V 响应",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "标准化质检槽位 V 响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "标准化质检槽位 G 响应": {
+      "main": [
+        [
+          {
+            "node": "统一解析质检结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "标准化质检槽位 O 响应": {
+      "main": [
+        [
+          {
+            "node": "统一解析质检结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "标准化质检槽位 V 响应": {
+      "main": [
+        [
+          {
+            "node": "统一解析质检结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "槽位 C｜是否使用参考图": {
+      "main": [
+        [
+          {
+            "node": "槽位 C｜参考图数量为1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "模型槽位 C｜OpenAI Images（在这里选择凭证）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "模型槽位 C｜OpenAI Images Edit（参考图）": {
+      "main": [
+        [
+          {
+            "node": "解析槽位 C｜OpenAI Images 结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "序列化槽位 C｜OpenAI Images Edit 错误",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "序列化槽位 C｜OpenAI Images Edit 错误": {
+      "main": [
+        [
+          {
+            "node": "解析槽位 C｜OpenAI Images 结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "槽位 C｜参考图数量为1": {
+      "main": [
+        [
+          {
+            "node": "模型槽位 C｜OpenAI Images Edit（1张参考图）",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "模型槽位 C｜OpenAI Images Edit（参考图）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "模型槽位 C｜OpenAI Images Edit（1张参考图）": {
+      "main": [
+        [
+          {
+            "node": "解析槽位 C｜OpenAI Images 结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "序列化槽位 C｜OpenAI Images Edit 错误",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "nodeGroups": [],
+  "tags": []
+}

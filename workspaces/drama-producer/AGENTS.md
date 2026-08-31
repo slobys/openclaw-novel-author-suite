@@ -82,7 +82,7 @@ projects/{project_id}/
 35 Location Prompt Gate
 37 独立多视角资产包 Gate
 40 缺失资产派发
-45 实际图片接收与安全审核
+45 实际图片证据接收与异常审核
 50 基于实际图片的最终分镜
 52 路线锚点环境衔接 Gate
 55 Shot Scene Binding Gate
@@ -167,6 +167,21 @@ review/duration_resolution.json
 
 同一模型的 Creator/Reviewer/Reviser 只是工作阶段，不得描述成真正独立审核。审核证据必须落盘，不能只在聊天里声明通过。
 
+### 图片审核唯一权威与免重复规则
+
+n8n Worker 的逐图结构化质检是图片语义审核的唯一权威。`deepwhite-scene-pack-builder` 负责设计连续性与参考链，n8n 负责检查实际生成图片是否符合 Prompt、参考身份、场景拓扑和生产安全；drama-producer 不得对同一批图片再做一次全量语义审核。
+
+当 Registry 条目同时满足以下条件时，Agent 必须直接消费证据，不得重新打开图片：
+
+- `status=approved`，且 job、payload、lock 绑定正确；
+- 文件可读，大小和 SHA256 匹配；
+- `qa_evidence.review_authority=n8n_structured_visual_qa`；
+- `qa_evidence.pass=true`、无 hard failure；
+- `production_safety` 完整，且 `ambiguity_reasons=[]`；
+- 视频参考图明确为干净单视图、无多面板、无文字标注。
+
+Stage 48 必须先运行 `scripts/ingest_asset_evidence.py`。只有 `review/asset_review_exceptions.json` 中列出的图片允许由 Agent 打开检查；不得顺手重看同批其他图片。异常审核结论写入 `review/asset_review_resolutions.json`，必须绑定同一完整 SHA256，再重跑一次确定性接收脚本。证据缺失不是“请 Agent 猜一下”，而是硬失败并返回 n8n/Registry 修复。
+
 ## 8. 状态与恢复
 
 项目元数据、生产状态、外部 Job 状态和 UI 进度必须分开：
@@ -213,7 +228,7 @@ python3 scripts/submit_asset_job.py --job projects/{project_id}/dispatch/asset_j
 python3 scripts/submit_video_job.py --job projects/{project_id}/dispatch/video_jobs/{video_job_id}.json --dry-run
 ```
 
-dry-run 通过后才可去掉 `--dry-run` 正式提交。不得绕过工作区入口直接调用旧 sender。
+dry-run 通过后才可去掉 `--dry-run` 正式提交。不得绕过工作区入口直接调用 sender。工作区入口会自动分流：普通兼容任务使用旧 sender；`scene_bound_auto_v1.2` 或带 `asset_lineage_id` 的正式任务必须使用严格连续性 sender，等待 Registry 中全部必需资产为 `approved`，并保存 `assets/reference_registry.json` 快照后才算图片阶段成功。Webhook 2xx 只代表入站成功。
 
 同一 payload 的重试必须复用原 `job_id`。不同 payload 不得复用旧 job ID。任务清单一旦正式提交，禁止原地修改；变更内容必须生成新版本并记录被替代关系。
 
@@ -307,8 +322,8 @@ AUTO_PRODUCTION_MODE 默认不逐阶段询问用户。只有以下情况暂停�
 
 ## NAS 图片观察
 
-- OpenClaw `image` 工具不能直接读取 `${OPENCLAW_ASSET_SHARED_ROOT}/...` 时，先按清单校验文件大小和 SHA256，再复制到当前项目的只读验收目录。
-- 单张临时检查可使用支持本地绝对路径的图片查看工具。
+- 默认不观察已具备完整 n8n `qa_evidence` 的图片，只校验清单、文件大小和 SHA256。
+- 仅当 `review/asset_review_exceptions.json` 列出某一资产时，才可把该单张图片复制到当前项目的只读验收目录或用本地绝对路径查看。
 - 审核副本不替代 NAS 原图和 manifest 的权威性。
 
 ## WebChat 图片上传
@@ -383,7 +398,7 @@ LOCK_MUTATION_DETECTED
 ```
 
 ### deepwhite-n8n-asset-dispatcher
-负责校验 asset-job v2.1、dry-run、提交和等待 reference registry。提交前必须验证路径、依赖、完整 `lock_hash` 和 Payload SHA256；完成时必须验证 job、payload、lock、文件大小和文件 SHA256。不得重新写 Prompt 或调整视觉设定。
+负责校验 asset-job v2.1、dry-run、提交和等待 reference registry。提交前必须验证路径、依赖、完整 `lock_hash` 和 Payload SHA256；完成时必须验证 job、payload、lock、文件大小、文件 SHA256 与结构化 `qa_evidence`。不得重新写 Prompt 或调整视觉设定。
 
 ## 2. 两次 Scene Pack 调用
 

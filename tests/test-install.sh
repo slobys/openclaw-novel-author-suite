@@ -49,6 +49,11 @@ test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-scene-pack-builder/SKILL.md"
 test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-continuity-worldstate-zh/scripts/validate_world_state_bundle.py"
 test -f "${OPENCLAW_STATE_DIR}/skills/deepwhite-n8n-asset-dispatcher/scripts/validate-continuity-job.mjs"
 test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/integration/deepwhite-continuity/n8n/OpenClaw连续资产依赖生图_参考图注入版_v2.json"
+test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/integration/n8n-production/01 资产任务总控（连续依赖与参考图 v2.0）.json"
+test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/integration/n8n-production/02 连续资产 Worker（依赖门禁+参考图注入 3并发 v2.0）.json"
+test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/integration/n8n-production/03 连续资产汇总、参考注册与 OpenClaw 回调 v2.0.json"
+test -f "${OPENCLAW_STATE_DIR}/workspace-drama-producer/scripts/ingest_asset_evidence.py"
+grep -q 'n8n Worker 的逐图结构化质检是图片语义审核的唯一权威' "${OPENCLAW_STATE_DIR}/workspace-drama-producer/AGENTS.md"
 test "$(find "${OPENCLAW_STATE_DIR}/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -eq 10
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-producer/memory/private.md")" = 'private memory'
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-drama-producer/projects/demo/private.txt")" = 'private project'

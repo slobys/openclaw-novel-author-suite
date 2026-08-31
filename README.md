@@ -48,6 +48,18 @@ flowchart TB
 
 流程不会因为某张图或某个片段失败就从头重做整集：场景规划失败回到场景规划，图片失败只重做失败资产，视频失败只处理失败片段，合成失败先修合成。
 
+### 图片为什么还有两层“检查”
+
+这两层不再重复看图，而是明确分工：
+
+| 层级 | 检查对象 | 是否再次看图 |
+| --- | --- | --- |
+| n8n Worker | 实际生成图片是否符合 Prompt、参考身份、场景拓扑、单视图和生产安全要求 | 是，逐图完成一次结构化视觉质检 |
+| Drama Producer Stage 48 | Registry、文件大小、SHA-256、Job/Payload/Lock 绑定和 n8n `qa_evidence` 是否真实完整 | 否，只做确定性证据验收 |
+| Agent 异常复核 | n8n 明确写入 `ambiguity_reasons` 的个别图片 | 是，但只查看异常清单中的单张图片 |
+
+因此，n8n 的图片语义质检必须保留；Agent 原来的全批次重复看图已经取消。证据齐全且通过的图片直接进入最终分镜，证据缺失则返回 n8n 修复，不能让 Agent 猜测补票。
+
 ## 各模块是干什么的
 
 | 模块 | 通俗角色 | 实际工作 |
@@ -60,7 +72,8 @@ flowchart TB
 | Scene Asset Planner | 场景美术统筹 | 先决定每个 Scene 具体发生在哪里、复用哪张旧场景、需要新画哪些角度；避免整集只用一个背景。 |
 | Image Prompt Builder | 图片提示词设计师 | 严格按照资产计划写图像提示词；重要角色/资产按独立 9:16 单图输出多个角度，不允许一张拼图塞所有视角。 |
 | Scene Pack Builder | 连续资产摄影棚 | 根据已经确定的场景和资产 ID，连续产出场景、人物、动物、生物或道具的单张多视角提示词；负责“同一资产换角度”，不负责改剧情或重新绑定场景。 |
-| Asset Dispatcher | 生图任务派发员 | 校验任务和重试预算后提交 n8n；HTTP 2xx 只记为“入口收到”，不冒充生成完成。 |
+| Asset Dispatcher | 生图与质检执行员 | 校验任务和重试预算后提交 n8n；n8n 逐图检查 Prompt、参考身份、场景拓扑和单视图安全，并把证据写入 Registry。HTTP 2xx 只记为“入口收到”，不冒充生成完成。 |
+| Asset Evidence Ingest | 资产证据接收员 | 核对 Registry、文件大小、SHA-256、锁和 n8n 质检证据；全部明确通过时不再重复看图，只有存在歧义的单张图片才交给 Agent 复核。 |
 | Shotlist Builder | 分镜师 | 使用实际审核通过的图片做分镜，并把每个镜头绑定到正确 Scene 和场景资产。 |
 | Transition Builder | 剪辑衔接设计师 | 只在需要时设计动作、视线、声音或首尾帧桥接；不能偷偷改掉场景绑定。 |
 | Video Dispatcher | 视频任务派发员 | 再次核对镜头、场景和参考资产后提交 n8n 视频任务。 |
@@ -73,7 +86,7 @@ flowchart TB
 适用于 Linux、群晖/QNAP 等 NAS SSH 环境。需要 OpenClaw、Node.js、Python 3、`bash`、`curl` 和 `tar`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.2.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.3.0/install.sh | bash
 ```
 
 安装器会：
@@ -90,23 +103,26 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 ## 安全卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.2.0/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/drama-v1.3.0/uninstall.sh | bash
 ```
 
 卸载器会把本套件的 10 个 Skills 移入带时间戳的备份目录，不直接永久删除；Agent Workspace、项目、memory、output、会话和 n8n 数据全部保留。确认不再使用后，再按你的 OpenClaw 版本手动删除两个 Agent roster 条目。
 
 ## 安装后必须配置
 
-本套件不会把作者自己的 NAS 路径、Webhook 或密钥公开。请给 OpenClaw Gateway 配置以下环境变量：
+本套件不会把作者自己的 NAS 路径、Webhook 或密钥公开。OpenClaw Gateway 需要配置共享目录和派发 Webhook；n8n 服务需要配置同一目录的容器内路径及回调地址：
 
 ```text
 OPENCLAW_ASSET_SHARED_ROOT=/宿主机可读取的共享资产根目录
 N8N_ASSET_ROOT=/data/openclaw-assets
 N8N_ASSET_WEBHOOK_URL=https://你的n8n/webhook/...
 N8N_ASSET_WEBHOOK_SECRET=你的密钥
+OPENCLAW_ASSET_CALLBACK_URL=http://你的OpenClaw网关:18789/hooks/deepwhite-assets
 N8N_VIDEO_WEBHOOK_URL=https://你的n8n/webhook/...
 N8N_VIDEO_WEBHOOK_SECRET=你的密钥
 ```
+
+其中 `OPENCLAW_ASSET_CALLBACK_URL` 配置在 n8n 容器，不是 Gateway；其余 `N8N_*_WEBHOOK_*` 与宿主机共享目录配置在 Gateway。
 
 systemd 用户服务可通过 `systemctl --user edit openclaw-gateway` 添加：
 
@@ -163,7 +179,7 @@ skills/
 └─ deepwhite-n8n-video-dispatcher
 ```
 
-`drama-producer/integration/deepwhite-continuity/n8n/` 中包含连续资产工作流 JSON、字段契约和同步脚本。导入后仍需在你自己的 n8n 中配置凭证、共享目录挂载和 Webhook。
+`workspaces/drama-producer/integration/n8n-production/` 是当前三工作流生产权威目录，包含 01 总控、02 Worker、03 汇总回调和严格请求示例。`workspaces/drama-producer/integration/deepwhite-continuity/n8n/` 保留为单工作流参考实现与字段片段。导入生产工作流后仍需在你自己的 n8n 中配置凭证、共享目录挂载、`OPENCLAW_ASSET_CALLBACK_URL` 和 Webhook。
 
 ## 数据和隐私
 

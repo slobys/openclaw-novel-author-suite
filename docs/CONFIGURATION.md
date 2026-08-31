@@ -6,6 +6,7 @@
 | --- | --- |
 | `OPENCLAW_ASSET_SHARED_ROOT` | 宿主机/OpenClaw 可读取的图片、视频结果与 manifest 固定根目录。 |
 | `N8N_ASSET_ROOT` | n8n 容器内映射到同一共享目录的路径，默认 `/data/openclaw-assets`。 |
+| `OPENCLAW_ASSET_CALLBACK_URL` | n8n 的 03 汇总工作流回调 OpenClaw 的完整 Hook 地址，例如 `http://openclaw-gateway:18789/hooks/deepwhite-assets`。 |
 | `N8N_ASSET_WEBHOOK_URL` | 图片任务入口。 |
 | `N8N_ASSET_WEBHOOK_SECRET` | 图片入口鉴权密钥。 |
 | `N8N_VIDEO_WEBHOOK_URL` | 视频任务入口。 |

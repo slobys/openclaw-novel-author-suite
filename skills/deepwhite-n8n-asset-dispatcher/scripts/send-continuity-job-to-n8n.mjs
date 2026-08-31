@@ -105,6 +105,38 @@ function bindingMatches(entry, asset) {
     && entry?.lock_hash === asset.lock_hash;
 }
 
+function qaEvidenceProblem(entry, asset) {
+  const qa = entry?.qa_evidence;
+  if (!qa || qa.review_authority !== 'n8n_structured_visual_qa') return 'qa_evidence missing or wrong authority';
+  if (qa.pass !== true) return 'qa_evidence.pass is not true';
+  if (!Array.isArray(qa.hard_requirement_failures) || qa.hard_requirement_failures.length) {
+    return 'qa_evidence hard failures are missing or non-empty';
+  }
+  const safety = qa.production_safety;
+  if (!safety || typeof safety !== 'object' || Array.isArray(safety)) return 'production_safety missing';
+  const requiredReferences = (asset.reference_inputs || []).filter(item => item?.required !== false);
+  if (requiredReferences.length && safety.reference_consistency_checked !== true) {
+    return 'reference consistency was not checked';
+  }
+  const category = String(asset.category || '').toLowerCase();
+  if (requiredReferences.length && ['character','animal','creature'].includes(category)) {
+    if (safety.identity_consistency_applicable !== true || safety.identity_consistent !== true) {
+      return 'identity continuity did not pass';
+    }
+  }
+  if (requiredReferences.length && ['location','scene','environment','shot','storyboard'].includes(category)) {
+    if (safety.scene_topology_applicable !== true || safety.scene_topology_consistent !== true) {
+      return 'scene topology continuity did not pass';
+    }
+  }
+  if (asset.asset_role === 'video_reference') {
+    if (safety.single_view_clean !== true) return 'video reference is not a clean single view';
+    if (safety.contains_multiple_independent_assets !== false) return 'video reference contains multiple assets';
+    if (safety.contains_text_or_annotations !== false) return 'video reference contains text or annotations';
+  }
+  return null;
+}
+
 function safeAssetPath(rawPath) {
   const resolved = path.resolve(String(rawPath || ''));
   if (resolved !== projectDir && !resolved.startsWith(`${projectDir}${path.sep}`)) return null;
@@ -154,6 +186,12 @@ while (Date.now() < deadline) {
         if (entry.sha256 !== actualSha) {
           failed += 1;
           problems.push(`${id}: sha256 mismatch`);
+          continue;
+        }
+        const qaProblem = qaEvidenceProblem(entry, asset);
+        if (qaProblem) {
+          failed += 1;
+          problems.push(`${id}: ${qaProblem}`);
           continue;
         }
         approved += 1;

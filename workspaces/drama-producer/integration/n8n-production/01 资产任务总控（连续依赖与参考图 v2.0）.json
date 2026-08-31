@@ -1,0 +1,238 @@
+{
+  "name": "01 资产任务总控（连续依赖与参考图 v2.0）",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 连续资产任务总控 v2.0\n\n日常仍只修改“生图与质检模型选择台”。\n\n新增能力：\n- 支持 depends_on、reference_inputs、anchor_roles、lock_id / lock_hash\n- 自动校验同任务依赖环并生成拓扑顺序\n- 人物/动物/生物/道具默认9:16，场景/分镜默认16:9\n- 有参考图的资产自动路由到槽位 C（OpenAI Images Edit）\n- 当前参考图注入上限为2张\n- 生成 asset_dependency_graph.json 与 reference_plan.json\n\n导入后默认停用。请先停用旧版01，再激活本工作流。",
+        "height": 320,
+        "width": 960
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "0aa83285-e7e2-48e5-afe9-b612132bc4e3",
+      "name": "总控说明"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "openclaw-assets",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        80,
+        368
+      ],
+      "id": "f85e53b3-0096-46fc-b980-05f37b767a94",
+      "name": "接收 OpenClaw 资产任务",
+      "webhookId": "openclaw-assets-continuity-v2",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NNpFnbra6rCC1rCL",
+          "name": "OpenClaw Asset Ingress"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst crypto = require('crypto');\n\nconst req = $input.first().json ?? {};\nconst payload = req.body ?? req;\nconst ROOT = path.resolve(String($env.OPENCLAW_ASSET_SHARED_ROOT || '/data/openclaw-assets'));\nconst MAX_ASSETS = 500;\nconst SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;\nconst STRICT_SCHEMA = /^2\\./.test(String(payload.schema_version || ''));\n\nif (!payload || typeof payload !== 'object' || Array.isArray(payload)) {\n  throw new Error('请求体必须是 JSON 对象');\n}\nif (!Array.isArray(payload.assets) || payload.assets.length === 0) {\n  throw new Error('assets 必须是非空数组');\n}\nif (payload.assets.length > MAX_ASSETS) {\n  throw new Error(`单任务资产数不能超过 ${MAX_ASSETS}`);\n}\n\nconst headers = Object.fromEntries(Object.entries(req.headers ?? {}).map(([key, value]) => [\n  String(key).toLowerCase(),\n  Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')\n]));\nfunction stable(value) {\n  if (Array.isArray(value)) return value.map(stable);\n  if (value && typeof value === 'object') {\n    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));\n  }\n  return value;\n}\nfunction objectSha(value) {\n  return `sha256:${crypto.createHash('sha256').update(JSON.stringify(stable(value))).digest('hex')}`;\n}\nconst payloadCopy = JSON.parse(JSON.stringify(payload));\ndelete payloadCopy.payload_sha256;\nconst computedPayloadSha256 = objectSha(payloadCopy);\nif (STRICT_SCHEMA) {\n  if (!SHA256_PATTERN.test(String(payload.payload_sha256 || '')) || payload.payload_sha256 !== computedPayloadSha256) {\n    throw new Error(`payload_sha256 缺失或不匹配，期望 ${computedPayloadSha256}`);\n  }\n  if (String(headers['x-openclaw-payload-sha256'] || '') !== computedPayloadSha256) {\n    throw new Error('请求头 x-openclaw-payload-sha256 缺失或不匹配');\n  }\n  if ('shared_asset_root' in payload || 'shared_asset_root' in (payload.defaults || {})) {\n    throw new Error('shared_asset_root 必须来自 OPENCLAW_ASSET_SHARED_ROOT，禁止由 Payload 指定');\n  }\n}\n\nfunction safeId(value, fallback, maxLength = 120) {\n  const cleaned = String(value ?? fallback)\n    .normalize('NFKC')\n    .replace(/[^a-zA-Z0-9_-]+/g, '_')\n    .replace(/^_+|_+$/g, '')\n    .slice(0, maxLength);\n  return cleaned || fallback;\n}\n\nfunction clamp(value, min, max, fallback) {\n  const number = Number(value);\n  return Number.isFinite(number)\n    ? Math.min(max, Math.max(min, Math.floor(number)))\n    : fallback;\n}\n\nfunction atomicJson(filePath, value) {\n  const tmp = `${filePath}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;\n  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');\n  fs.renameSync(tmp, filePath);\n}\n\nfunction normalizeStringArray(value, fieldName, maxItems = 64) {\n  if (value === undefined || value === null) return [];\n  if (!Array.isArray(value)) throw new Error(`${fieldName} 必须是数组`);\n  if (value.length > maxItems) throw new Error(`${fieldName} 不能超过 ${maxItems} 项`);\n  const seen = new Set();\n  const output = [];\n  for (const item of value) {\n    const normalized = safeId(item, '', 140);\n    if (!normalized || seen.has(normalized)) continue;\n    seen.add(normalized);\n    output.push(normalized);\n  }\n  return output;\n}\n\nfunction normalizeCategory(value) {\n  const raw = String(value ?? '').normalize('NFKC').trim().toLowerCase();\n  const aliases = {\n    role: 'character', character: 'character', '角色': 'character', '人物': 'character',\n    animal: 'animal', '动物': 'animal',\n    creature: 'creature', monster: 'creature', '生物': 'creature', '异兽': 'creature', '怪物': 'creature',\n    scene: 'location', location: 'location', '场景': 'location', '地点': 'location',\n    prop: 'prop', object: 'prop', vehicle: 'prop', '道具': 'prop', '载具': 'prop',\n    style: 'style', '风格': 'style',\n    storyboard: 'storyboard', shot: 'storyboard', '分镜': 'storyboard', '镜头': 'storyboard'\n  };\n  return aliases[raw] ?? 'other';\n}\n\nfunction resolveSafeFile(rawPath, fieldName) {\n  if (typeof rawPath !== 'string' || !rawPath.trim()) {\n    throw new Error(`${fieldName} 必须是非空路径`);\n  }\n  const resolved = path.resolve(rawPath.trim());\n  const safeRoot = path.resolve(ROOT) + path.sep;\n  if (!resolved.startsWith(safeRoot)) {\n    throw new Error(`${fieldName} 超出固定资产根目录`);\n  }\n  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {\n    throw new Error(`${fieldName} 不存在或不是文件：${resolved}`);\n  }\n  const extension = path.extname(resolved).toLowerCase();\n  if (!new Set(['.png', '.jpg', '.jpeg', '.webp']).has(extension)) {\n    throw new Error(`${fieldName} 格式不受支持：${extension || 'unknown'}`);\n  }\n  return resolved;\n}\n\nfunction normalizeReferenceImages(value, assetId, maximum) {\n  if (value === undefined || value === null) return [];\n  if (!Array.isArray(value)) throw new Error(`${assetId} 的 reference_images 必须是数组`);\n  if (value.length > maximum) {\n    throw new Error(`${assetId} 的直接 reference_images 不能超过 ${maximum} 张`);\n  }\n  const seen = new Set();\n  return value.map((rawPath, index) => {\n    const resolved = resolveSafeFile(rawPath, `${assetId}.reference_images[${index}]`);\n    if (seen.has(resolved)) throw new Error(`${assetId} 存在重复参考图：${resolved}`);\n    seen.add(resolved);\n    return resolved;\n  });\n}\n\nfunction extractHardLocks(prompt, assetId, category) {\n  const sceneMode = category === 'location';\n  const headingGroups = [\n    ['style_lock', ['【STYLE LOCK｜固定原文】']],\n    [sceneMode ? 'scene_dna' : 'subject_dna', sceneMode\n      ? ['【SCENE DNA / SUBJECT DNA｜固定原文】', '【SCENE DNA｜固定原文】']\n      : ['【SCENE DNA / SUBJECT DNA｜固定原文】', '【SUBJECT DNA｜固定原文】']],\n    [sceneMode ? 'spatial_lock' : 'structure_lock', sceneMode\n      ? ['【SPATIAL LOCK / STRUCTURE LOCK｜固定原文】', '【SPATIAL LOCK｜固定原文】']\n      : ['【SPATIAL LOCK / STRUCTURE LOCK｜固定原文】', '【STRUCTURE LOCK｜固定原文】']],\n    ['continuity_lock', ['【CONTINUITY LOCK｜固定原文】']]\n  ];\n  const text = String(prompt || '');\n  const locks = {};\n  const allAcceptedHeadings = headingGroups.flatMap(([, accepted]) => accepted);\n  for (const [key, accepted] of headingGroups) {\n    const present = accepted\n      .map((heading) => ({ heading, startAt: text.indexOf(heading) }))\n      .filter((item) => item.startAt >= 0);\n    if (present.length === 0) throw new Error(`${assetId} 缺少四锁标题之一：${accepted.join(' / ')}`);\n    if (present.length > 1) throw new Error(`${assetId} 存在冲突的四锁标题：${present.map((item) => item.heading).join(' / ')}`);\n    const { heading, startAt } = present[0];\n    const contentStart = startAt + heading.length;\n    let contentEnd = text.length;\n    for (const nextHeading of allAcceptedHeadings) {\n      const candidate = text.indexOf(nextHeading, contentStart);\n      if (candidate >= 0 && candidate < contentEnd) contentEnd = candidate;\n    }\n    const nextAny = text.slice(contentStart).match(/\\n【[^】]+】/);\n    if (nextAny) contentEnd = Math.min(contentEnd, contentStart + nextAny.index);\n    const value = text.slice(contentStart, contentEnd).trim();\n    if (!value) throw new Error(`${assetId} 四锁内容为空：${heading}`);\n    locks[key] = value;\n  }\n  return locks;\n}\n\nfunction normalizeReferenceInputs(value, assetId) {\n  if (value === undefined || value === null) return [];\n  if (!Array.isArray(value)) throw new Error(`${assetId} 的 reference_inputs 必须是数组`);\n  if (value.length > 16) throw new Error(`${assetId} 的 reference_inputs 不能超过16项`);\n  return value.map((raw, index) => {\n    const input = typeof raw === 'string' ? { asset_id: raw } : raw;\n    if (!input || typeof input !== 'object' || Array.isArray(input)) {\n      throw new Error(`${assetId}.reference_inputs[${index}] 必须是字符串或对象`);\n    }\n    const refAssetId = input.asset_id ? safeId(input.asset_id, '', 140) : '';\n    const directPath = input.path\n      ? resolveSafeFile(input.path, `${assetId}.reference_inputs[${index}].path`)\n      : '';\n    if ((!refAssetId && !directPath) || (refAssetId && directPath)) {\n      throw new Error(`${assetId}.reference_inputs[${index}] 必须且只能填写 asset_id 或 path`);\n    }\n    return {\n      asset_id: refAssetId || null,\n      path: directPath || null,\n      role: String(input.role ?? 'reference').trim() || 'reference',\n      required: input.required !== false,\n      approved_only: input.approved_only !== false,\n      priority: clamp(input.priority, 0, 999, index + 1),\n      notes: String(input.notes ?? '').trim()\n    };\n  });\n}\n\nfunction hasRunningAsset(runningDir, assetId) {\n  if (!fs.existsSync(runningDir)) return false;\n  return fs.readdirSync(runningDir)\n    .filter((name) => name.endsWith('.json'))\n    .some((name) => {\n      try {\n        const task = JSON.parse(fs.readFileSync(path.join(runningDir, name), 'utf8'));\n        return String(task.asset_id ?? '') === String(assetId);\n      } catch {\n        return false;\n      }\n    });\n}\n\nconst projectId = safeId(payload.project_id, 'project', 80);\nconst jobId = safeId(payload.job_id, `job_${Date.now()}`, 100);\nconst resumeFailed = payload.resume_failed === true;\nconst rawDefaults = payload.defaults ?? {};\n\nconst configuredGenerationModel = String(rawDefaults.model ?? '').trim();\nconst inferredImageSlot = /gemini/i.test(configuredGenerationModel)\n  ? 'B'\n  : /gpt|image/i.test(configuredGenerationModel)\n    ? 'C'\n    : 'A';\nconst slotDefinitions = {\n  A: {\n    provider: 'volcengine_ark',\n    model: String(payload.SLOT_A_MODEL ?? (inferredImageSlot === 'A' ? configuredGenerationModel : '')).trim(),\n    cost_tier: 'configurable',\n    options: {\n      image_size: String(payload.SLOT_A_IMAGE_SIZE ?? rawDefaults.image_size ?? '2K').toUpperCase(),\n      guidance_scale: 3\n    }\n  },\n  B: {\n    provider: 'google_gemini',\n    model: String(payload.SLOT_B_MODEL ?? (inferredImageSlot === 'B' ? configuredGenerationModel : '')).trim(),\n    cost_tier: 'configurable',\n    options: { image_size: String(payload.SLOT_B_IMAGE_SIZE ?? rawDefaults.image_size ?? '2K').toUpperCase() }\n  },\n  C: {\n    provider: 'openai_images',\n    model: String(payload.SLOT_C_MODEL ?? (inferredImageSlot === 'C' ? configuredGenerationModel : '')).trim(),\n    cost_tier: 'configurable',\n    options: {\n      quality: String(payload.SLOT_C_QUALITY ?? 'medium').toLowerCase(),\n      background: 'opaque',\n      output_format: 'png'\n    }\n  }\n};\n\nconst activeSlot = String(payload.ACTIVE_IMAGE_SLOT ?? inferredImageSlot).trim().toUpperCase();\nconst fallbackSlot = String(payload.FALLBACK_IMAGE_SLOT ?? 'NONE').trim().toUpperCase();\nconst referenceImageSlot = String(\n  payload.REFERENCE_IMAGE_SLOT ?? (['B', 'C'].includes(activeSlot) ? activeSlot : 'C')\n).trim().toUpperCase();\nconst allowedSlots = new Set(['A', 'B', 'C']);\nif (!allowedSlots.has(activeSlot)) throw new Error('ACTIVE_IMAGE_SLOT 只能填写 A、B 或 C');\nif (fallbackSlot !== 'NONE' && !allowedSlots.has(fallbackSlot)) {\n  throw new Error('FALLBACK_IMAGE_SLOT 只能填写 NONE、A、B 或 C');\n}\nif (!['B', 'C'].includes(referenceImageSlot)) {\n  throw new Error('REFERENCE_IMAGE_SLOT 只能填写已实现真实参考图注入的 B 或 C');\n}\n\nconst paidGenerationLimit = clamp(payload.MAX_PAID_GENERATIONS_PER_ASSET, 1, 3, 1);\nconst maxReferenceImages = clamp(payload.MAX_REFERENCE_IMAGES, 1, 2, 2);\nconst allowProvisionalReferences = payload.ALLOW_PROVISIONAL_REFERENCES === true;\n\nfunction validateSlot(slotId) {\n  const route = slotDefinitions[slotId];\n  if (!route.model || /REPLACE|替换|请填写/i.test(route.model)) {\n    throw new Error(`模型槽位 ${slotId} 缺少真实 Model ID`);\n  }\n  return route;\n}\n\nfunction buildVisualRoutePlan(requiresReferences) {\n  if (requiresReferences) {\n    const referenceRoute = validateSlot(referenceImageSlot);\n    return Array.from({ length: paidGenerationLimit }, (_, index) => ({\n      attempt: index + 1,\n      route_id: `slot_${referenceImageSlot}`,\n      slot_id: referenceImageSlot,\n      reference_capable: true,\n      ...referenceRoute\n    }));\n  }\n  const primary = validateSlot(activeSlot);\n  const routes = [{\n    attempt: 1,\n    route_id: `slot_${activeSlot}`,\n    slot_id: activeSlot,\n    reference_capable: ['B', 'C'].includes(activeSlot),\n    ...primary\n  }];\n  if (paidGenerationLimit <= 1) return routes;\n  const retrySlot = fallbackSlot === 'NONE' ? activeSlot : fallbackSlot;\n  const retry = validateSlot(retrySlot);\n  while (routes.length < paidGenerationLimit) {\n    routes.push({\n      attempt: routes.length + 1,\n      route_id: `slot_${retrySlot}`,\n      slot_id: retrySlot,\n      reference_capable: ['B', 'C'].includes(retrySlot),\n      ...retry\n    });\n  }\n  return routes;\n}\n\nconst configuredReviewModel = String(rawDefaults.review_model ?? '').trim();\nconst reviewSlotDefinitions = {\n  G: { provider: 'google_gemini', model: String(payload.REVIEW_SLOT_G_MODEL ?? configuredReviewModel).trim() },\n  O: { provider: 'openai_vision', model: String(payload.REVIEW_SLOT_O_MODEL ?? '').trim() },\n  V: { provider: 'volcengine_vision', model: String(payload.REVIEW_SLOT_V_MODEL ?? '').trim() }\n};\nconst activeReviewSlot = String(payload.ACTIVE_REVIEW_SLOT ?? 'G').trim().toUpperCase();\nif (!['G', 'O', 'V'].includes(activeReviewSlot)) {\n  throw new Error('ACTIVE_REVIEW_SLOT 只能填写 G、O 或 V');\n}\nconst selectedReviewRoute = reviewSlotDefinitions[activeReviewSlot];\nif (!selectedReviewRoute.model || /REPLACE|替换|请填写/i.test(selectedReviewRoute.model)) {\n  throw new Error(`质检槽位 ${activeReviewSlot} 缺少真实 Model ID`);\n}\nconst reviewApiMaxRetries = clamp(payload.MAX_REVIEW_API_RETRIES, 1, 5, 3);\n\nconst defaults = {\n  model: String(rawDefaults.model ?? 'doubao-seedream-4-0-250828'),\n  aspect_ratio: String(rawDefaults.aspect_ratio ?? '16:9'),\n  image_size: String(rawDefaults.image_size ?? '2K').toUpperCase(),\n  review_model: String(rawDefaults.review_model ?? 'gemini-2.5-flash'),\n  review_min_score: clamp(rawDefaults.review_min_score, 0, 100, 80),\n  review_max_retries: clamp(rawDefaults.review_max_retries, 0, 3, 2),\n  max_image_generations: clamp(rawDefaults.max_image_generations, 1, 6, 3)\n};\nconst categoryDefaultRatios = {\n  location: '16:9', storyboard: '16:9',\n  character: '9:16', animal: '9:16', creature: '9:16', prop: '9:16',\n  style: defaults.aspect_ratio, other: defaults.aspect_ratio\n};\nconst allowedRatios = new Set(['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']);\nconst allowedSizes = new Set(['1K', '2K', '4K']);\nconst seenIds = new Set();\nconst seenFiles = new Set();\n\nlet assets = payload.assets.map((asset, index) => {\n  if (!asset || typeof asset !== 'object' || Array.isArray(asset)) {\n    throw new Error(`assets[${index}] 必须是对象`);\n  }\n  const assetId = safeId(asset.asset_id, `ASSET_${String(index + 1).padStart(3, '0')}`);\n  if (seenIds.has(assetId)) throw new Error(`重复 asset_id：${assetId}`);\n  seenIds.add(assetId);\n\n  const filenameBase = safeId(String(asset.filename ?? assetId).replace(/\\.[^.]+$/, ''), assetId);\n  const filename = `${filenameBase}.png`;\n  if (seenFiles.has(filename)) throw new Error(`重复 filename：${filename}`);\n  seenFiles.add(filename);\n\n  const promptZh = typeof asset.prompt_zh === 'string' ? asset.prompt_zh.trim() : '';\n  const promptEn = typeof asset.prompt_en === 'string' ? asset.prompt_en.trim() : '';\n  if (!promptZh && !promptEn) throw new Error(`${assetId} 缺少 prompt_zh / prompt_en`);\n\nconst category = normalizeCategory(asset.category ?? asset.asset_type);\n  const assetMetadata = asset.metadata && typeof asset.metadata === 'object' && !Array.isArray(asset.metadata)\n    ? asset.metadata\n    : {};\n  const sceneIds = normalizeStringArray(asset.scene_ids ?? assetMetadata.scene_ids, `${assetId}.scene_ids`, 128);\n  const sceneId = String(asset.scene_id ?? assetMetadata.scene_id ?? '').trim();\n  const locationId = String(asset.location_id ?? assetMetadata.location_id ?? '').trim();\n  const subLocationId = String(asset.sub_location_id ?? assetMetadata.sub_location_id ?? '').trim();\n  const locationAssetId = String(asset.location_asset_id ?? assetMetadata.location_asset_id ?? assetId).trim();\n  if (STRICT_SCHEMA) {\n    if (!promptZh.startsWith('【PORTABLE HARD LOCK｜独立可用｜禁止删减】')) {\n      throw new Error(`${assetId} 缺少 PORTABLE HARD LOCK 固定开头`);\n    }\n    const canonicalLocks = extractHardLocks(promptZh, assetId, category);\n    const computedLockHash = crypto.createHash('sha256').update(JSON.stringify(stable(canonicalLocks))).digest('hex');\n    const submittedLockHash = String(asset.lock_hash || '');\n    if (!new Set([computedLockHash, `sha256:${computedLockHash}`]).has(submittedLockHash)) {\n      throw new Error(`${assetId} lock_hash 缺失或不匹配，期望 ${computedLockHash}`);\n    }\n    if (!String(asset.lock_id || '').trim()) throw new Error(`${assetId} 缺少 lock_id`);\n    const renderAsset = ['character', 'creature', 'location', 'prop'].includes(category);\n    if (renderAsset) {\n      if (asset.asset_role !== 'video_reference') throw new Error(`${assetId} asset_role 必须为 video_reference`);\n      if (!String(asset.asset_kind || '').trim()) throw new Error(`${assetId} 缺少 asset_kind`);\n      if (!String(asset.angle_id || '').trim()) throw new Error(`${assetId} 缺少 angle_id`);\n      if (asset.layout_type !== 'single_view_clean') throw new Error(`${assetId} layout_type 必须为 single_view_clean`);\n      if (asset.contains_multiple_independent_assets !== false) {\n        throw new Error(`${assetId} contains_multiple_independent_assets 必须为 false`);\n      }\n    }\n    if (category === 'location') {\n      if (sceneIds.length === 0) throw new Error(`${assetId} 缺少 scene_ids[]`);\n      if (!locationId) throw new Error(`${assetId} 缺少 location_id`);\n      if (!subLocationId) throw new Error(`${assetId} 缺少 sub_location_id`);\n      if (!locationAssetId) throw new Error(`${assetId} 缺少 location_asset_id`);\n    }\n    if (String(asset.generation_stage || '').toLowerCase() === 'shot' && !sceneId) {\n      throw new Error(`${assetId} shot 资产缺少 scene_id`);\n    }\n  }\n  const directReferences = normalizeReferenceImages(asset.reference_images, assetId, maxReferenceImages);\n  const referenceInputs = normalizeReferenceInputs(asset.reference_inputs, assetId);\n  const requiresReferences = directReferences.length > 0 || referenceInputs.length > 0;\n  const requestedMaximum = clamp(asset.max_image_generations, 1, paidGenerationLimit, paidGenerationLimit);\n  const fullRoutePlan = buildVisualRoutePlan(requiresReferences);\n  const maxImageGenerations = Math.min(paidGenerationLimit, requestedMaximum, fullRoutePlan.length);\n  const modelRoutePlan = fullRoutePlan.slice(0, maxImageGenerations).map((route) => ({ ...route }));\n\n  let aspectRatio = String(asset.aspect_ratio ?? categoryDefaultRatios[category] ?? defaults.aspect_ratio);\n  if (!allowedRatios.has(aspectRatio)) aspectRatio = categoryDefaultRatios[category] ?? '16:9';\n  let imageSize = String(asset.image_size ?? defaults.image_size).toUpperCase();\n  if (!allowedSizes.has(imageSize)) imageSize = '2K';\n\n  const dependsOn = normalizeStringArray(asset.depends_on, `${assetId}.depends_on`, 128);\n  if (dependsOn.includes(assetId)) throw new Error(`${assetId} 不能依赖自身`);\n\n  return {\n    original_index: index + 1,\n    asset_index: index + 1,\n    asset_id: assetId,\n    parent_asset_id: asset.parent_asset_id ? safeId(asset.parent_asset_id, '', 140) : null,\n    family_id: asset.family_id ? safeId(asset.family_id, '', 140) : null,\n    asset_code: String(asset.asset_code ?? '').trim() || null,\n    generation_stage: ['anchor', 'derived', 'shot'].includes(String(asset.generation_stage ?? '').toLowerCase())\n      ? String(asset.generation_stage).toLowerCase()\n      : 'derived',\n    category,\nasset_type: category,\n    asset_role: String(asset.asset_role ?? '').trim() || null,\n    asset_kind: String(asset.asset_kind ?? category).trim() || category,\n    angle_id: String(asset.angle_id ?? '').trim() || null,\n    layout_type: String(asset.layout_type ?? '').trim() || null,\n    contains_multiple_independent_assets: asset.contains_multiple_independent_assets === true,\n    contains_text_or_annotations: asset.contains_text_or_annotations === true,\n    video_reference_eligible: asset.video_reference_eligible !== false,\n    reference_scope: String(asset.reference_scope ?? '').trim() || null,\n    scene_ids: sceneIds,\n    scene_id: sceneId ? safeId(sceneId, '', 140) : null,\n    location_id: locationId ? safeId(locationId, '', 140) : null,\n    sub_location_id: subLocationId ? safeId(subLocationId, '', 140) : null,\n    location_asset_id: locationAssetId ? safeId(locationAssetId, '', 140) : null,\n    payload_sha256: computedPayloadSha256,\n    name: String(asset.name ?? assetId),\n    filename,\n    prompt_zh: promptZh,\n    prompt_en: promptEn,\n    negative_prompt: String(asset.negative_prompt ?? '').trim(),\n    model: modelRoutePlan[0].model,\n    model_route_plan: modelRoutePlan,\n    aspect_ratio: aspectRatio,\n    image_size: imageSize,\n    depends_on: dependsOn,\n    reference_inputs: referenceInputs,\n    reference_images: directReferences,\n    requires_reference_images: requiresReferences,\n    max_reference_images: maxReferenceImages,\n    allow_provisional_references: asset.allow_provisional_references === true || allowProvisionalReferences,\n    anchor_roles: normalizeStringArray(asset.anchor_roles, `${assetId}.anchor_roles`, 32),\n    lock_id: String(asset.lock_id ?? '').trim() || null,\n    lock_hash: String(asset.lock_hash ?? '').trim() || null,\n    prompt_policy: String(asset.prompt_policy ?? 'PORTABLE_HARD_LOCK').trim(),\n    metadata: asset.metadata ?? {},\n    max_image_generations: maxImageGenerations,\n    review_slot_id: activeReviewSlot,\n    review_provider: selectedReviewRoute.provider,\n    review_model: selectedReviewRoute.model,\n    review_route_profile: `review_slot_${activeReviewSlot}`,\n    review_min_score: clamp(asset.review_min_score, 0, 100, defaults.review_min_score),\n    review_max_retries: Math.min(\n      Math.max(0, maxImageGenerations - 1),\n      clamp(asset.review_max_retries, 0, 3, defaults.review_max_retries)\n    )\n  };\n});\n\n// 对同一任务内依赖做拓扑排序；跨任务依赖由 Worker 通过项目级 Registry 解析。\nconst assetMap = new Map(assets.map((asset) => [asset.asset_id, asset]));\nconst indegree = new Map(assets.map((asset) => [asset.asset_id, 0]));\nconst adjacency = new Map(assets.map((asset) => [asset.asset_id, []]));\nfor (const asset of assets) {\n  for (const dependency of asset.depends_on) {\n    if (!assetMap.has(dependency)) continue;\n    indegree.set(asset.asset_id, indegree.get(asset.asset_id) + 1);\n    adjacency.get(dependency).push(asset.asset_id);\n  }\n}\nconst ready = assets.filter((asset) => indegree.get(asset.asset_id) === 0)\n  .sort((a, b) => a.original_index - b.original_index)\n  .map((asset) => asset.asset_id);\nconst sortedIds = [];\nwhile (ready.length) {\n  const id = ready.shift();\n  sortedIds.push(id);\n  for (const child of adjacency.get(id)) {\n    indegree.set(child, indegree.get(child) - 1);\n    if (indegree.get(child) === 0) {\n      ready.push(child);\n      ready.sort((a, b) => assetMap.get(a).original_index - assetMap.get(b).original_index);\n    }\n  }\n}\nif (sortedIds.length !== assets.length) {\n  const cycleNodes = assets.filter((asset) => !sortedIds.includes(asset.asset_id)).map((asset) => asset.asset_id);\n  throw new Error(`DEPENDENCY_CYCLE_DETECTED：${cycleNodes.join(', ')}`);\n}\nassets = sortedIds.map((id, index) => ({ ...assetMap.get(id), asset_index: index + 1 }));\n\nconst outputDir = path.resolve(ROOT, projectId, jobId);\nconst safeRoot = path.resolve(ROOT) + path.sep;\nif (!outputDir.startsWith(safeRoot)) throw new Error('任务输出目录超出固定资产根目录');\nconst dirs = {\n  queue: path.join(outputDir, '_queue'),\n  running: path.join(outputDir, '_running'),\n  doneQueue: path.join(outputDir, '_queue_done'),\n  status: path.join(outputDir, '_status'),\n  statusHistory: path.join(outputDir, '_status_history'),\n  candidates: path.join(outputDir, '_candidates'),\n  rejected: path.join(outputDir, '_rejected'),\n  logs: path.join(outputDir, '_logs'),\n  dependencyState: path.join(outputDir, '_dependency_state')\n};\nfs.mkdirSync(outputDir, { recursive: true });\nfor (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true });\n\nconst routingSnapshot = {\n  schema_version: '2.0',\n  selection_mode: 'visual_credential_slots',\n  active_profile: `visual_slot_${activeSlot}`,\n  active_slot: activeSlot,\n  fallback_slot: fallbackSlot,\n  reference_image_slot: referenceImageSlot,\n  max_reference_images: maxReferenceImages,\n  max_paid_generations_per_asset: paidGenerationLimit,\n  slots: Object.fromEntries(Object.entries(slotDefinitions).map(([id, value]) => [id, { provider: value.provider, model: value.model }])),\n  cost_guard: {\n    allow_request_to_raise_budget: false,\n    fallback_on_auth_error: false,\n    fallback_on_request_error: true,\n    timeout_unknown_retry_limit: 1,\n    rate_limit_retry_limit: 5,\n    use_best_candidate_when_exhausted: true\n  }\n};\nconst reviewRoutingSnapshot = {\n  schema_version: '1.1',\n  selection_mode: 'visual_credential_slots',\n  active_slot: activeReviewSlot,\n  provider: selectedReviewRoute.provider,\n  model: selectedReviewRoute.model,\n  max_api_retries: reviewApiMaxRetries,\n  slots: reviewSlotDefinitions\n};\nconst referencePolicy = {\n  approved_only_default: !allowProvisionalReferences,\n  allow_provisional_references: allowProvisionalReferences,\n  registry_path: path.resolve(ROOT, projectId, 'reference_registry.json'),\n  maximum_images_per_request: maxReferenceImages\n};\n\nconst jobCore = {\n  schema_version: '3.1',\n  input_schema_version: String(payload.schema_version ?? 'legacy'),\n  payload_sha256: computedPayloadSha256,\n  project_id: projectId,\n  job_id: jobId,\n  source: String(payload.source ?? 'openclaw'),\n  defaults,\n  model_routing: routingSnapshot,\n  review_routing: reviewRoutingSnapshot,\n  reference_policy: referencePolicy,\n  expected_count: assets.length,\n  assets\n};\nconst jobHash = crypto.createHash('sha256').update(JSON.stringify(jobCore)).digest('hex');\nconst jobPath = path.join(outputDir, 'job.json');\nif (fs.existsSync(jobPath)) {\n  const existingJob = JSON.parse(fs.readFileSync(jobPath, 'utf8'));\n  if (existingJob.job_hash !== jobHash) {\n    throw new Error(`相同 project_id/job_id 已存在不同资产任务：${projectId}/${jobId}`);\n  }\n} else {\n  atomicJson(jobPath, { ...jobCore, job_hash: jobHash, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });\n}\n\natomicJson(path.join(outputDir, 'asset_dependency_graph.json'), {\n  schema_version: '1.0',\n  project_id: projectId,\n  job_id: jobId,\n  topological_order: assets.map((asset) => asset.asset_id),\n  nodes: assets.map((asset) => ({\n    asset_id: asset.asset_id,\n    generation_stage: asset.generation_stage,\n    depends_on: asset.depends_on,\n    reference_inputs: asset.reference_inputs\n  }))\n});\natomicJson(path.join(outputDir, 'reference_plan.json'), {\n  schema_version: '1.0',\n  project_id: projectId,\n  job_id: jobId,\n  registry_path: referencePolicy.registry_path,\n  assets: assets.map((asset) => ({\n    asset_id: asset.asset_id,\n    requires_reference_images: asset.requires_reference_images,\n    reference_inputs: asset.reference_inputs,\n    direct_reference_images: asset.reference_images,\n    anchor_roles: asset.anchor_roles\n  }))\n});\n\nlet queuedCount = 0;\nlet pendingCount = 0;\nlet reusedCount = 0;\nlet failedResetCount = 0;\nfor (const asset of assets) {\n  const statusPath = path.join(dirs.status, `${asset.asset_id}.json`);\n  const queuePath = path.join(dirs.queue, `${asset.asset_id}.json`);\n  const doneQueuePath = path.join(dirs.doneQueue, `${asset.asset_id}.json`);\n  if (fs.existsSync(statusPath)) {\n    const record = JSON.parse(fs.readFileSync(statusPath, 'utf8'));\n    const isFailure = !['accepted', 'accepted_fallback', 'accepted_fallback_unreviewed'].includes(record.final_status);\n    if (!isFailure || !resumeFailed) {\n      reusedCount += 1;\n      continue;\n    }\n    fs.renameSync(statusPath, path.join(dirs.statusHistory, `${asset.asset_id}_${Date.now()}.json`));\n    failedResetCount += 1;\n  }\n  if (fs.existsSync(queuePath) || hasRunningAsset(dirs.running, asset.asset_id)) {\n    pendingCount += 1;\n    continue;\n  }\n  if (fs.existsSync(doneQueuePath)) {\n    fs.renameSync(doneQueuePath, queuePath);\n    pendingCount += 1;\n    continue;\n  }\n  atomicJson(queuePath, {\n    schema_version: '3.1',\n    continuity_mode: true,\n    payload_sha256: computedPayloadSha256,\n    project_id: projectId,\n    job_id: jobId,\n    output_dir: outputDir,\n    reference_registry_path: referencePolicy.registry_path,\n    ...asset,\n    retry_count: 0,\n    image_generation_count: 0,\n    review_retry_count: 0,\n    review_api_retry_count: 0,\n    review_api_max_retries: reviewApiMaxRetries,\n    qa_feedback: '',\n    review_history: [],\n    worker_execution_count: 0,\n    not_before: 0,\n    queued_at: new Date().toISOString()\n  });\n  queuedCount += 1;\n}\n\nreturn [{\n  json: {\n    event: 'n8n_asset_job_queued',\n    schema_version: '3.0',\n    continuity_mode: true,\n    project_id: projectId,\n    job_id: jobId,\n    payload_sha256: computedPayloadSha256,\n    expected_count: assets.length,\n    queued_count: queuedCount,\n    pending_count: pendingCount,\n    reused_count: reusedCount,\n    failed_reset_count: failedResetCount,\n    dependency_graph_filename: 'asset_dependency_graph.json',\n    reference_plan_filename: 'reference_plan.json',\n    reference_registry_path: referencePolicy.registry_path,\n    reference_image_slot: referenceImageSlot,\n    max_reference_images: maxReferenceImages,\n    status: 'queued',\n    message: '连续资产任务已按依赖顺序写入文件队列；参考图资产将自动路由到槽位 C'\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        368
+      ],
+      "id": "33c1e301-d49b-452d-a52f-aaf38ac4e400",
+      "name": "校验任务并写入文件队列"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        816,
+        368
+      ],
+      "id": "aafd2757-abe8-4b0f-9573-36ebbb989e5b",
+      "name": "返回任务已入队"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5d223572-3bcf-4f1a-b54c-0d7f9a570ae5",
+              "name": "ACTIVE_IMAGE_SLOT",
+              "value": "C",
+              "type": "string"
+            },
+            {
+              "id": "4ce65212-8d82-4dd6-8801-3daae16bb854",
+              "name": "FALLBACK_IMAGE_SLOT",
+              "value": "C",
+              "type": "string"
+            },
+            {
+              "id": "1ce161f0-b765-4b0d-a825-b875aede71f9",
+              "name": "MAX_PAID_GENERATIONS_PER_ASSET",
+              "value": 2,
+              "type": "number"
+            },
+            {
+              "id": "bdc16fff-f3ee-4781-8395-0a0474ae6c0f",
+              "name": "SLOT_A_MODEL",
+              "value": "doubao-seedream-4-0-250828",
+              "type": "string"
+            },
+            {
+              "id": "948f65d6-97d3-41e7-b006-b8b077240782",
+              "name": "SLOT_A_IMAGE_SIZE",
+              "value": "2K",
+              "type": "string"
+            },
+            {
+              "id": "e7120322-e081-47f4-ad2d-ebe261152ede",
+              "name": "SLOT_B_MODEL",
+              "value": "gemini-3.1-flash-image",
+              "type": "string"
+            },
+            {
+              "id": "c1e30155-45f0-4f02-8d45-85d2f2d0c945",
+              "name": "SLOT_B_IMAGE_SIZE",
+              "value": "2K",
+              "type": "string"
+            },
+            {
+              "id": "504284ee-e57f-47d7-9acc-5168a21113e2",
+              "name": "SLOT_C_MODEL",
+              "value": "gpt-image-2",
+              "type": "string"
+            },
+            {
+              "id": "fb8d26b3-061f-47dc-a4c8-7a6b90733ca2",
+              "name": "SLOT_C_QUALITY",
+              "value": "medium",
+              "type": "string"
+            },
+            {
+              "id": "c3de10c0-1905-46da-9d6b-6fd3114e59b4",
+              "name": "ACTIVE_REVIEW_SLOT",
+              "value": "O",
+              "type": "string"
+            },
+            {
+              "id": "9aa73494-39f0-4942-af8e-30333027b69f",
+              "name": "MAX_REVIEW_API_RETRIES",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "a41eefe6-fed2-4ac1-9947-7790529b8209",
+              "name": "REVIEW_SLOT_G_MODEL",
+              "value": "gemini-2.5-flash",
+              "type": "string"
+            },
+            {
+              "id": "49b56d0d-6591-45bc-acb0-0dccebdd3ee9",
+              "name": "REVIEW_SLOT_O_MODEL",
+              "value": "gpt-5.4-mini",
+              "type": "string"
+            },
+            {
+              "id": "b7ecabce-bccb-47c2-a6af-0b83ef6fc0d1",
+              "name": "REVIEW_SLOT_V_MODEL",
+              "value": "doubao-seed-2-0-lite-260215",
+              "type": "string"
+            },
+            {
+              "id": "f77691a3-2f90-4302-a0db-fdb7209634e4",
+              "name": "REFERENCE_IMAGE_SLOT",
+              "value": "C",
+              "type": "string"
+            },
+            {
+              "id": "d17ae111-d10d-40de-9009-15d3ed31b9c5",
+              "name": "MAX_REFERENCE_IMAGES",
+              "value": 2,
+              "type": "number"
+            },
+            {
+              "id": "eda2dd7b-8252-445b-b7c6-b61441087469",
+              "name": "ALLOW_PROVISIONAL_REFERENCES",
+              "value": false,
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        352,
+        368
+      ],
+      "id": "fe8b6b01-82c3-4e2f-8dc3-1fa40b96e9ca",
+      "name": "生图与质检模型选择台（只改这里）"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "接收 OpenClaw 资产任务": {
+      "main": [
+        [
+          {
+            "node": "生图与质检模型选择台（只改这里）",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "校验任务并写入文件队列": {
+      "main": [
+        [
+          {
+            "node": "返回任务已入队",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "生图与质检模型选择台（只改这里）": {
+      "main": [
+        [
+          {
+            "node": "校验任务并写入文件队列",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "nodeGroups": [],
+  "tags": []
+}

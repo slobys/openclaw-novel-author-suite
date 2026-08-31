@@ -13,6 +13,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+BUNDLED_SKILLS_DIR = ROOT.parents[1] / "skills"
+if not BUNDLED_SKILLS_DIR.is_dir():
+    # 开发工作区把各 Skill 与 workspace-drama-producer 并列放置；
+    # 公开部署包则统一放在仓库 skills/ 下。
+    BUNDLED_SKILLS_DIR = ROOT.parent
 OPENCLAW_STATE_DIR = Path(
     os.environ.get("OPENCLAW_STATE_DIR", os.environ.get("OPENCLAW_HOME", Path.home() / ".openclaw"))
 ).expanduser()
@@ -29,16 +34,18 @@ REFERENCE_MAX_BYTES = 20 * 1024 * 1024
 OPENAI_NATIVE_MULTIPART_MAX_REFERENCES = 2
 VALIDATOR = ROOT / "scripts" / "validate_asset_render_specs.py"
 RETRY_GUARD = ROOT / "scripts" / "asset_retry_guard.py"
-DEPLOYED_UPSTREAM = SKILLS_DIR / "deepwhite-n8n-asset-dispatcher" / "scripts" / "send-assets-to-n8n.mjs"
+DEPLOYED_LEGACY_UPSTREAM = SKILLS_DIR / "deepwhite-n8n-asset-dispatcher" / "scripts" / "send-assets-to-n8n.mjs"
+DEPLOYED_STRICT_UPSTREAM = SKILLS_DIR / "deepwhite-n8n-asset-dispatcher" / "scripts" / "send-continuity-job-to-n8n.mjs"
 DEPLOYED_PROMPT_VALIDATOR = Path(
     SKILLS_DIR / "deepwhite-image-prompt-builder" / "scripts" / "validate_location_prompt_manifest.py"
 )
-UPSTREAM = DEPLOYED_UPSTREAM if DEPLOYED_UPSTREAM.is_file() else ROOT.parents[1] / "skills" / "deepwhite-n8n-asset-dispatcher" / "scripts" / "send-assets-to-n8n.mjs"
-PROMPT_VALIDATOR = DEPLOYED_PROMPT_VALIDATOR if DEPLOYED_PROMPT_VALIDATOR.is_file() else ROOT.parents[1] / "skills" / "deepwhite-image-prompt-builder" / "scripts" / "validate_location_prompt_manifest.py"
+LEGACY_UPSTREAM = DEPLOYED_LEGACY_UPSTREAM if DEPLOYED_LEGACY_UPSTREAM.is_file() else BUNDLED_SKILLS_DIR / "deepwhite-n8n-asset-dispatcher" / "scripts" / "send-assets-to-n8n.mjs"
+STRICT_UPSTREAM = DEPLOYED_STRICT_UPSTREAM if DEPLOYED_STRICT_UPSTREAM.is_file() else BUNDLED_SKILLS_DIR / "deepwhite-n8n-asset-dispatcher" / "scripts" / "send-continuity-job-to-n8n.mjs"
+PROMPT_VALIDATOR = DEPLOYED_PROMPT_VALIDATOR if DEPLOYED_PROMPT_VALIDATOR.is_file() else BUNDLED_SKILLS_DIR / "deepwhite-image-prompt-builder" / "scripts" / "validate_location_prompt_manifest.py"
 DEPLOYED_ANGLE_VALIDATOR = Path(
     SKILLS_DIR / "deepwhite-image-prompt-builder" / "scripts" / "validate_angle_pack.py"
 )
-ANGLE_VALIDATOR = DEPLOYED_ANGLE_VALIDATOR if DEPLOYED_ANGLE_VALIDATOR.is_file() else ROOT.parents[1] / "skills" / "deepwhite-image-prompt-builder" / "scripts" / "validate_angle_pack.py"
+ANGLE_VALIDATOR = DEPLOYED_ANGLE_VALIDATOR if DEPLOYED_ANGLE_VALIDATOR.is_file() else BUNDLED_SKILLS_DIR / "deepwhite-image-prompt-builder" / "scripts" / "validate_angle_pack.py"
 
 
 def project_root_from_job(job_path: Path) -> Path:
@@ -59,6 +66,25 @@ def atomic_write_json(path: Path, payload: dict) -> None:
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temp.replace(path)
+
+
+def decode_json_stream(text: str) -> list[dict]:
+    """Decode one or more consecutive JSON documents emitted by the strict sender."""
+    decoder = json.JSONDecoder()
+    documents: list[dict] = []
+    offset = 0
+    while offset < len(text):
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+        if offset >= len(text):
+            break
+        try:
+            value, offset = decoder.raw_decode(text, offset)
+        except json.JSONDecodeError:
+            break
+        if isinstance(value, dict):
+            documents.append(value)
+    return documents
 
 
 def auto_retry_guard_required(project_root: Path, payload: dict) -> bool:
@@ -169,7 +195,11 @@ def validate_partial_recovery(
             errors.append(f"{asset_id}: 前序 Job 状态标识不匹配")
         if status.get("asset_id") != asset_id or status.get("final_status") != "accepted":
             errors.append(f"{asset_id}: 前序 Job 未证明 accepted")
-        if stat.st_size != status.get("file_size") or sha256_file(output_path) != status.get("sha256"):
+        actual_sha256 = sha256_file(output_path)
+        if stat.st_size != status.get("file_size") or status.get("sha256") not in {
+            actual_sha256,
+            f"sha256:{actual_sha256}",
+        }:
             errors.append(f"{asset_id}: 前序 Job 输出大小或 SHA256 不匹配")
     return errors
 
@@ -290,47 +320,61 @@ def main() -> int:
     if use_retry_guard and run_guard(job, guard_command, "--out", str(retry_gate)) != 0:
         print("资产任务未提交：跨 Job 重试预算 Gate 未通过", file=sys.stderr)
         return 2
-    command = ["node", str(UPSTREAM), str(job)]
+    sender = STRICT_UPSTREAM if use_retry_guard else LEGACY_UPSTREAM
+    command = ["node", str(sender), str(job)]
     if args.dry_run:
         command.append("--dry-run")
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    elif use_retry_guard:
+        command.extend(["--wait", "--registry-snapshot=assets/reference_registry.json"])
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+    )
     if completed.stdout:
         print(completed.stdout, end="")
     if completed.stderr:
         print(completed.stderr, end="", file=sys.stderr)
     if completed.returncode != 0:
         if use_retry_guard and not args.dry_run:
-            match = re.search(r"HTTP\s+([0-9]{3})", completed.stderr or "")
-            http_status = int(match.group(1)) if match else None
-            permanent_client_error = http_status is not None and 400 <= http_status < 500 and http_status not in {408, 429}
-            if permanent_client_error:
-                run_guard(job, "update", "--status", "failed", "--reason-code", f"dispatcher_http_{http_status}")
+            if completed.returncode == 3:
+                run_guard(job, "update", "--status", "failed", "--reason-code", "registry_not_all_approved")
+            elif completed.returncode == 4:
+                run_guard(job, "update", "--status", "generating", "--reason-code", "registry_wait_timeout")
             else:
-                run_guard(job, "update", "--status", "transport_failed", "--reason-code", "dispatcher_transport_error")
+                match = re.search(r"HTTP\s+([0-9]{3})", completed.stderr or "")
+                http_status = int(match.group(1)) if match else None
+                permanent_client_error = http_status is not None and 400 <= http_status < 500 and http_status not in {408, 429}
+                if permanent_client_error:
+                    run_guard(job, "update", "--status", "failed", "--reason-code", f"dispatcher_http_{http_status}")
+                else:
+                    run_guard(job, "update", "--status", "transport_failed", "--reason-code", "dispatcher_transport_error")
         return completed.returncode
     if args.dry_run:
         return completed.returncode
 
-    try:
-        response = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        response = {"raw_stdout": completed.stdout[-2000:]}
+    responses = decode_json_stream(completed.stdout)
+    response = responses[-1] if responses else {"raw_stdout": completed.stdout[-2000:]}
+    strict_success = bool(use_retry_guard and response.get("all_required_assets_approved") is True)
     atomic_write_json(
         project_root / "dispatch" / "last_submission.json",
         {
             "schema_version": "1.0",
             "job_id": job_payload.get("job_id"),
-            "payload_sha256": sha256_file(job),
-            "status": response.get("status") or "webhook_accepted_unverified",
+            "payload_sha256": response.get("payload_sha256") or sha256_file(job),
+            "status": "accepted" if strict_success else response.get("status") or "webhook_accepted_unverified",
             "http_status": response.get("http_status"),
             "execution_id": response.get("execution_id"),
             "submitted_at": datetime.now(timezone.utc).isoformat(),
             "response": response,
+            "response_stream": responses,
         },
     )
     if use_retry_guard:
-        submitted_status = response.get("status") or "webhook_accepted_unverified"
-        if submitted_status not in {"webhook_accepted_unverified", "execution_confirmed"}:
+        submitted_status = "accepted" if strict_success else response.get("status") or "webhook_accepted_unverified"
+        if submitted_status not in {"accepted", "webhook_accepted_unverified", "execution_confirmed", "generating"}:
             submitted_status = "webhook_accepted_unverified"
         guard_result = run_guard(job, "update", "--status", submitted_status)
         if guard_result != 0:
