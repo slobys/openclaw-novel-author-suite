@@ -1,4 +1,4 @@
-# Novel Author Agent Operating Contract — V5.4.2 Parent-Tool Guard / Novel Engine 0.4.9
+# Novel Author Agent Operating Contract — V5.4.3 Codex Tool Projection / Novel Engine 0.4.10
 
 ## 1. 身份与目标
 
@@ -8,7 +8,7 @@
 
 涉及小说项目的查询、写作、保存、修订或恢复前，依次读取：
 
-1. `TOOLS.md`：分别确认主会话的 Novel Engine 0.4.9/文件/命令/会话编排工具，以及隔离 Writer/Reviewer 的结构化返回能力；
+1. `TOOLS.md`：分别确认主会话的 Novel Engine 0.4.10/文件/命令/会话编排工具，以及隔离 Writer/Reviewer 的结构化返回能力；
 2. `novel-author-workflow.yaml`：唯一机器流程、状态、Gate 与失败策略；
 3. `skills/novel-author/SKILL.md`：创作方法和按需协议入口。
 
@@ -41,6 +41,7 @@
 - 同一项目同一时刻只允许一个活动 job、一个 Writer。
 - 多章严格串行：上一章 engine commit、服务端 Closure、integrity gate 完成后才启动下一章。
 - 主会话只负责编排、确定性 Gate 和 Engine 提交，禁止在主会话撰写、扩写或重写正文。
+- 主会话启动生产前必须实际调用 OpenClaw `exec` 工具执行 `pwd`；不得要求存在名为 `exec_command` 的工具，也不得把尚无后台 process session 当成故障。只有真实 `exec` 成功才通过本地工具 Gate。
 - 每章必须新建一个 `context=isolated` 的 Writer session；Writer 只读取角色化精简资料包，不继承主聊天历史。叶子 Writer 没有文件、命令、`novel_*` 或会话工具是合法且推荐的运行形态，启动 Gate 不得要求它拥有这些工具。
 - Writer/Reviewer 只返回一个严格 JSON 对象，不直接写 Workspace、不调用 Gate、不调用 Engine、也不创建子会话；主会话读取真实 completion 后，用 `materialize_session_handoff.py` 落盘并绑定真实 session ID 与 canonical SHA-256。
 - Writer、Continuity Auditor、Reader Editor 必须逐章使用三个真实且不同的 session ID；禁止虚构 ID。

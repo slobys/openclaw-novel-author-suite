@@ -1,6 +1,6 @@
 {
   "name": "@slobys/openclaw-novel-engine",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "One-click OpenClaw novel author suite with a persistent engine, flexible length contracts, independent quality gates and recoverable story state.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,6 +21,7 @@
     "UPGRADE-0.4.7.md",
     "UPGRADE-0.4.8.md",
     "UPGRADE-0.4.9.md",
+    "UPGRADE-0.4.10.md",
     "AUDIT-REPORT.md"
   ],
   "scripts": {

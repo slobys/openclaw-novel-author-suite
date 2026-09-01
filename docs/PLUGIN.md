@@ -1,6 +1,6 @@
-# Novel Engine 0.4.9 — Parent-Tool Guard Edition
+# Novel Engine 0.4.10 — Codex Tool Projection Edition
 
-面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.4.9 保留项目写锁有限等待、租约心跳和陈旧锁安全回收，并与 Novel Author V5.4.2 Parent-Tool Guard Workspace 一起提供公开部署。`novel_prepare_chapter` 默认返回角色化 compact packet，减少长篇主会话重复上下文；项目数据格式不变。隔离 Writer/Reviewer 只返回结构化结果，父会话负责落盘与 Hash 绑定，安装器确保父会话具备所需文件与运行时工具。
+面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.4.10 保留项目写锁有限等待、租约心跳和陈旧锁安全回收，并与 Novel Author V5.4.3 Codex Tool Projection Workspace 一起提供公开部署。`novel_prepare_chapter` 默认返回角色化 compact packet，减少长篇主会话重复上下文；项目数据格式不变。隔离 Writer/Reviewer 只返回结构化结果，父会话负责落盘与 Hash 绑定，安装器同时配置工具组和 Codex Harness 所需的具体工具 ID。
 
 ## 核心能力
 

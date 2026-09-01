@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="0.4.9"
+SUITE_VERSION="0.4.10"
 REPOSITORY="slobys/openclaw-novel-author-suite"
 REF="${NOVEL_SUITE_REF:-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
@@ -164,7 +164,8 @@ configure_novel_author_tools() {
         };
         const conflicts = deny.filter((pattern) => requiredTargets.some((target) => matches(pattern, target)));
         const canonical = [
-          "group:fs", "group:runtime", "agents_list", "image_generate", "novel-engine",
+          "group:fs", "group:runtime", "read", "write", "edit", "apply_patch", "exec", "process",
+          "agents_list", "image_generate", "novel-engine",
           "session_status", "sessions_history", "sessions_list", "sessions_send",
           "sessions_spawn", "sessions_yield", "subagents"
         ];
@@ -224,6 +225,6 @@ if ! openclaw plugins inspect novel-engine --runtime --json >/dev/null 2>&1; the
   log "Runtime inspection is not ready yet. If restart was deferred, run: openclaw plugins inspect novel-engine --runtime --json"
 fi
 
-log "Installed Novel Engine ${SUITE_VERSION} and Novel Author V5.4.2 Parent-Tool Guard"
+log "Installed Novel Engine ${SUITE_VERSION} and Novel Author V5.4.3 Codex Tool Projection"
 log "Workspace backup: ${backup_dir}"
 log "Novel data was not modified. Open the novel-author agent to begin."

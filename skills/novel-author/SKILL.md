@@ -3,7 +3,7 @@ name: novel-engine-operations
 description: 操作 Novel Engine V5 服务端工具，负责项目状态、审计、提交、对账、Closure、修订和完整性检查；具体小说创作规则由 workspace 的 novel-author Skill 负责。
 ---
 
-# Novel Engine Operations — V5.4.2 Parent-Tool Guard
+# Novel Engine Operations — V5.4.3 Codex Tool Projection
 
 `novel-engine` 是作品业务事实、章节正文和提交状态的唯一权威来源。聊天记忆、workspace 缓存、任务文件和本地脚本只负责创作判断、编排或派生校验；冲突时以 `novel_*` 工具返回为准。
 

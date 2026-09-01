@@ -1,6 +1,6 @@
-# Server-Side Gate Protocol V5.4.2 / Novel Engine 0.4.9
+# Server-Side Gate Protocol V5.4.3 / Novel Engine 0.4.10
 
-Agent 侧 Gate 不能替代服务端持久化前校验。正式配套版本为 Novel Engine `0.4.9`。
+Agent 侧 Gate 不能替代服务端持久化前校验。正式配套版本为 Novel Engine `0.4.10`。
 
 服务端能力预检以 `novel_project_status.serverCapabilities` 和 `storyLedgers.chapterLengthGate` 为准，至少验证：
 

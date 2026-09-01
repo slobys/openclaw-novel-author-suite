@@ -1,6 +1,6 @@
 # workspace-novel-author V5.0 审计报告
 
-> 本文件保留 V5.0 历史审计记录。当前配套版本为 Novel Author V5.4.2 Parent-Tool Guard / Novel Engine 0.4.9；默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200，并增加逐章隔离 Writer、父会话确定性落盘、父会话工具校验、幂等取消、自动修订次数、正文 Hash 变化和同稿循环阻断测试。
+> 本文件保留 V5.0 历史审计记录。当前配套版本为 Novel Author V5.4.3 Codex Tool Projection / Novel Engine 0.4.10；默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200，并增加逐章隔离 Writer、父会话确定性落盘、具体工具 ID 投射校验、幂等取消、自动修订次数、正文 Hash 变化和同稿循环阻断测试。
 
 ## 基线判断
 
@@ -46,7 +46,7 @@
 - Precommit Gate 强制绑定 Quality receipt；
 - Closure 默认增加 `dynamic_state` 与 `memory_index`；
 - 新增 5 个 V5 协议和 3 个模板；
-- 历史版本曾以 companion patch 交付服务端门禁；公开版已由根目录 Novel Engine 0.4.9 直接提供，不再携带旧 ZIP 补丁。
+- 历史版本曾以 companion patch 交付服务端门禁；公开版已由根目录 Novel Engine 0.4.10 直接提供，不再携带旧 ZIP 补丁。
 
 ## 权威边界
 

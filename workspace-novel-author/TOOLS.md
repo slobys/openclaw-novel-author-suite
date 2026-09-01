@@ -1,6 +1,16 @@
-# novel-author 运行工具契约 — V5.4.2 Parent-Tool Guard / Novel Engine 0.4.9
+# novel-author 运行工具契约 — V5.4.3 Codex Tool Projection / Novel Engine 0.4.10
 
 本文件用于启动时确认能力，不替代 `novel-author-workflow.yaml` 的阶段裁决。只承认当前 OpenClaw runtime 真实注册的工具。
+
+## 主会话本地工具投射
+
+主会话运行本地 Gate 必须实际具备以下具体工具 ID：`read`、`write`、`edit`、`apply_patch`、`exec`、`process`。`group:fs` 与 `group:runtime` 只是 OpenClaw 策略组，不能替代 Codex Harness 有限运行时白名单中的具体 ID。
+
+- OpenClaw 标准命令工具 ID 是 `exec`，不是 `exec_command`；不得因缺少字面量 `exec_command` 判定环境失败；
+- `process` 只控制已经由 `exec` 启动的后台命令。尚未执行 `exec` 时没有 process session 属于正常状态；
+- `/tools verbose` 只证明 Gateway 策略允许。正式生产前必须实际调用一次 `exec` 执行 `pwd`，成功返回当前 Workspace 才算主会话工具 Gate 通过；
+- 工具策略或 Gateway 发生变化后必须新建主会话再做探针，禁止仅凭旧持久会话的工具快照继续生产；
+- 探针失败时停止在提交前，不得重写正文、重审或创建新 Writer。
 
 ## 基础项目与配置
 
