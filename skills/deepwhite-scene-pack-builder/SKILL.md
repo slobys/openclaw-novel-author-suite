@@ -1,9 +1,7 @@
 ---
 name: deepwhite-scene-pack-builder
-version: "3.3.0"
 description: 连续视觉资产中枢；除交互式场景/人物/动物/生物/道具资产外，新增PIPELINE_BATCH的BASE_ASSET与SHOT_ASSET_GAP双阶段，输出四锁、父子资产、依赖图、参考计划及n8n可执行子资产。
-user-invocable: true
-disable-model-invocation: false
+metadata: {"version":"3.3.0"}
 ---
 
 # DeepWhite Scene Pack Builder
@@ -810,6 +808,10 @@ pass: BASE_ASSET | SHOT_ASSET_GAP
 - 不等待用户逐项确认；
 - 必须一次性写完本阶段全部机器可读文件；
 - 仍必须为每个最终图片子资产生成完整 `PORTABLE HARD LOCK`；
+- 必须读取并原样继承 `handoffs/scene_asset_handoff.json` 中的 `scene_id`、`location_id`、`sub_location_id` 和允许的 `location_asset_id`；
+- Scene Pack 只展开视觉父子资产，禁止创建、替换或重新推断 Scene 绑定；
+- 每个 `lock_hash` 必须是四锁原文规范化对象的完整 SHA256，格式为 `sha256:<64个小写十六进制字符>`；
+- 输出交给 PACKAGER_ONLY 后，必须由 `validate-continuity-job.mjs` 重新计算并比较 Hash，不能把非空字符串视为通过。
 - 任何四锁缺失均为失败关闭，返回 `HARD_LOCK_VALIDATION_FAILED`。
 
 ## 13.2 BASE_ASSET Pass
@@ -819,10 +821,14 @@ pass: BASE_ASSET | SHOT_ASSET_GAP
 ```text
 project.json
 script/
+script/scene_index.json
 world/characters.json
 world/locations.json
 world/props.json
 assets/asset_list.json
+assets/scene_asset_plan.json
+assets/location_asset_requirements.json
+handoffs/scene_asset_handoff.json
 ```
 
 职责：
