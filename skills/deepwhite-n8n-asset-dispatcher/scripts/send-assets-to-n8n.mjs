@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs/promises';
-import crypto from 'node:crypto';
 import process from 'node:process';
 
 const args = process.argv.slice(2);
@@ -115,21 +114,6 @@ function validateJob(job) {
   }
 }
 
-function stable(value) {
-  if (Array.isArray(value)) return value.map(stable);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
-  }
-  return value;
-}
-
-function payloadSha256(job) {
-  const hashable = JSON.parse(JSON.stringify(job));
-  delete hashable.payload_sha256;
-  const digest = crypto.createHash('sha256').update(JSON.stringify(stable(hashable))).digest('hex');
-  return `sha256:${digest}`;
-}
-
 async function loadInput() {
   if (fileArg) {
     return fs.readFile(fileArg, 'utf8');
@@ -144,7 +128,7 @@ async function loadInput() {
   fail('请传入 JSON 文件路径，或通过 stdin 输入 JSON');
 }
 
-async function postWithRetry(url, secret, body, payloadSha256, maxAttempts = 4) {
+async function postWithRetry(url, secret, body, maxAttempts = 4) {
   let lastError;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -157,7 +141,6 @@ async function postWithRetry(url, secret, body, payloadSha256, maxAttempts = 4) 
         headers: {
           'content-type': 'application/json',
           'x-openclaw-secret': secret,
-          'x-openclaw-payload-sha256': payloadSha256,
           'user-agent': 'openclaw-n8n-asset-dispatcher/1.0'
         },
         body,
@@ -193,7 +176,6 @@ try {
   validateJob(job);
 
   if (!job.created_at) job.created_at = new Date().toISOString();
-  job.payload_sha256 = payloadSha256(job);
   const body = JSON.stringify(job);
 
   if (dryRun) {
@@ -212,7 +194,7 @@ try {
   if (!url) fail('缺少环境变量 N8N_ASSET_WEBHOOK_URL');
   if (!secret) fail('缺少环境变量 N8N_ASSET_WEBHOOK_SECRET');
 
-  const result = await postWithRetry(url, secret, body, job.payload_sha256);
+  const result = await postWithRetry(url, secret, body);
   let responseJson = {};
   try {
     responseJson = result.text.trim() ? JSON.parse(result.text) : {};

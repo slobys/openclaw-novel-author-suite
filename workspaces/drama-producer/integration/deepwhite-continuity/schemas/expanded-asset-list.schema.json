@@ -127,11 +127,33 @@
             "shot"
           ]
         },
+        "scene_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "scene_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"}
+        },
+        "location_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "sub_location_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "location_asset_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
         "lock_id": {
           "type": "string"
         },
         "lock_hash": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
         },
         "depends_on": {
           "type": "array",
@@ -178,6 +200,16 @@
           ]
         }
       },
+      "allOf": [
+        {
+          "if": {"properties": {"category": {"enum": ["location", "scene", "shot"]}}, "required": ["category"]},
+          "then": {"required": ["scene_ids", "location_id", "sub_location_id", "location_asset_id"]}
+        },
+        {
+          "if": {"properties": {"generation_stage": {"const": "shot"}}, "required": ["generation_stage"]},
+          "then": {"required": ["scene_id"]}
+        }
+      ],
       "additionalProperties": true
     }
   },

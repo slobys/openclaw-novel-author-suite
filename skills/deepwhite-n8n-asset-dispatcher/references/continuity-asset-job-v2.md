@@ -1,33 +1,24 @@
-<!-- BEGIN DEEPWHITE_CONTINUITY_DISPATCH_V2 -->
+# Continuity Asset Job v2.1
 
-# Continuity Asset Job v2（最高优先级）
+当任务 `schema_version` 为 `2.x` 或包含 `reference_inputs` 时，使用连续资产派发模式。
 
-当任务 `schema_version` 为 `2.x` 或包含 `reference_inputs` 时，必须使用连续资产派发模式。
+## 提交前
 
-除旧版必需字段外，保留：
+1. `project_id/job_id/asset_id/filename` 必须通过安全 ASCII 校验；
+2. `shared_asset_root` 只能来自 `OPENCLAW_ASSET_SHARED_ROOT`，不得出现在 Payload；
+3. `depends_on` 必须无环；外部依赖必须同时声明为 `reference_inputs`；
+4. 必需参考图必须声明 `approved_only: true`；
+5. `lock_hash` 必须是四锁规范化对象的完整 SHA256；
+6. 运行 `validate-continuity-job.mjs`。发送脚本会再次执行相同验证并生成 `payload_sha256`。
 
-```text
-parent_asset_id
-family_id
-style_id
-asset_code
-generation_stage
-lock_id
-lock_hash
-depends_on
-reference_inputs
-anchor_roles
+## 正式自动生产
+
+```bash
+node scripts/send-continuity-job-to-n8n.mjs dispatch/asset_jobs/job.json \
+  --wait \
+  --registry-snapshot=assets/reference_registry.json
 ```
 
-派发前必须：
+HTTP 2xx 只表示 `webhook_accepted_unverified`。只有 Registry 中每个必需资产均为 `approved`，且 `job_id`、`payload_sha256`、`lock_hash`、`file_size` 和文件 `sha256` 全部匹配，才算阶段成功。
 
-1. 校验 asset_id 和 filename 唯一；
-2. 校验依赖图无环；
-3. 确认所有必需参考图声明包含 `approved_only: true`；
-4. 运行 `validate-continuity-job.mjs`；
-5. 使用 `send-continuity-job-to-n8n.mjs` 提交；
-6. 共享目录可用时加 `--wait`，等待 reference registry 到达终态。
-
-不得删除额外连续性字段后降级为 v1 任务。
-
-<!-- END DEEPWHITE_CONTINUITY_DISPATCH_V2 -->
+`rejected/failed/superseded` 是失败终态，不是成功终态。
