@@ -78,6 +78,8 @@ projects/{project_id}/
 10 稳定 Scene-ID 剧本
 20 连续性世界状态
 25 Scene Asset Planner
+27 生图前 Shot Intent（非最终分镜）
+28 Asset Demand Resolver 与 Demand Coverage Gate
 30 STRICT 图片提示词
 35 Location Prompt Gate
 37 独立多视角资产包 Gate
@@ -122,7 +124,9 @@ scene_id
 - `reuse_assets[]` 不得再次提交 n8n；
 - 人物/生物生产参考默认 9:16，环境/场景 16:9，道具 9:16；
 - 一图一主体、一角度、一状态，禁止拼图、多面板和说明文字；
-- 核心、常驻、单集重要角色及常驻生物必须形成 8 个独立 9:16 文件的标准方向包；横向设定页仅可做 `design_sheet`，不得进入视频引用；
+- 单集关键路径默认按镜头需求渐进生成人物/生物视图；`episode_important` 不得仅因等级触发 8 方向整包；
+- 只有系列合同明确标记为 `series_core` 且要求系列资产库完整包时，才生成 8 个独立 9:16 标准方向文件；该系列回填任务不得阻塞本集未使用方向；
+- 每个生成资产必须绑定非空 `consumer_shot_ids[]`，或显式标记 `series_library=true`；横向设定页仅可做 `design_sheet`，不得进入视频引用；
 - 视频只允许引用通过 `assets/video_reference_manifest.json` 安全 Gate 的资产；
 - 系列复用资产必须验证文件可读性、大小与 SHA256。
 
@@ -151,10 +155,11 @@ review/duration_resolution.json
 硬 Gate 至少包括：
 
 - Scene Asset Coverage；
+- Asset Demand Coverage；
 - Location Prompt Manifest Coverage；
 - 图片结果完整性；
 - Video Reference Safety；
-- Independent Angle Pack；
+- Conditional Independent Angle Pack（仅显式系列完整包）；
 - Environment Continuity；
 - Asset Retry Budget；
 - Shot Scene Binding；
@@ -207,6 +212,8 @@ python3 scripts/pipeline_state.py record-job --project-root projects/{project_id
 - 剧本变化 → Stage 20 及以后失效；
 - 连续性变化 → Stage 25 及以后失效；
 - Scene Asset Handoff 变化 → Stage 30 及以后失效；
+- Shot Intent 变化 → Stage 28 及以后失效；
+- Asset Demand Manifest 变化 → Stage 30 及以后失效；
 - 实际图片变化 → Stage 50 及以后失效；
 - 路线锚点或空间连续性变化 → Stage 52 及以后失效；
 - 分镜/时长变化 → Stage 55 及以后失效；
@@ -354,6 +361,10 @@ script/scene_index.json
   -> AUTO_MACHINE_MODE world_state JSON
   -> deepwhite-scene-asset-planner
   -> handoffs/scene_asset_handoff.json
+  -> SHOT_INTENT_ONLY（不生成最终分镜）
+  -> deepwhite-asset-demand-resolver
+  -> assets/asset_demand_manifest.json
+  -> gates/asset_demand_coverage_gate.json
   -> deepwhite-scene-pack-builder
   -> deepwhite-image-prompt-builder PACKAGER_ONLY
   -> n8n dependency-aware generation
@@ -390,6 +401,7 @@ script/scene_index.json
 - 生成 Markdown、JSON 和唯一文件名；
 - 检查 `lock_hash`；
 - 不得重新设计、总结、精炼或同义改写四锁。
+- 按需任务的Job顶层必须写 `demand_manifest_path`、`demand_gate_path` 与当前 `demand_wave`；人物/生物子资产默认写 `angle_pack_mode=on_demand`。只有显式系列完整包可写 `angle_pack_mode=full`。
 
 发现锁发生变化，必须返回：
 
@@ -403,10 +415,10 @@ LOCK_MUTATION_DETECTED
 ## 2. 两次 Scene Pack 调用
 
 ### BASE_ASSET
-在资产盘点后、分镜前执行。输出基础人物锚点、场景布局/母版/反向验证和道具母版。
+在 Demand Coverage Gate 后执行。只展开 `generation_wave=0` 的最小身份锚点、必要场景母版和剧情关键道具；不得为 `episode_important` 机械补齐8方向，也不得生成没有 `consumer_shot_ids[]` 的单集资产。
 
 ### SHOT_ASSET_GAP
-在分镜后执行。只为实际镜头补充缺少的 `V/CV/PX/CP/SH` 资产，不得为每个场景机械生成所有视角。
+在分镜草案后执行。只展开 `generation_wave=1` 且实际镜头仍缺少的 `V/CV/PX/CP/SH` 资产，不得回填未使用方向，不得为每个场景机械生成所有视角。
 
 ## 3. 父实体与子图片资产
 

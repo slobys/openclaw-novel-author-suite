@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://deepwhite.local/schemas/asset-job-v2.schema.json",
-  "title": "DeepWhite Continuity Asset Job v2.1",
+  "title": "DeepWhite Continuity Asset Job v2",
   "type": "object",
   "required": [
     "schema_version",
@@ -17,12 +17,10 @@
       "pattern": "^2\\."
     },
     "project_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "type": "string"
     },
     "job_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "type": "string"
     },
     "source": {
       "type": "string"
@@ -61,14 +59,7 @@
       "items": {
         "$ref": "https://deepwhite.local/schemas/expanded-asset-list.schema.json#/$defs/asset"
       }
-    },
-    "payload_sha256": {
-      "type": "string",
-      "pattern": "^sha256:[a-f0-9]{64}$"
     }
-  },
-  "not": {
-    "required": ["shared_asset_root"]
   },
   "additionalProperties": true
 }

@@ -43,6 +43,25 @@ default_settings:
     lock_mutation_policy: fail_closed
     reference_policy: approved_only
     must_preserve_scene_handoff: true
+  asset_demand:
+    enabled: true
+    skill: deepwhite-asset-demand-resolver
+    resolver: scripts/resolve_asset_demand.py
+    intent_output: shots/shot_intent_manifest.json
+    manifest_output: assets/asset_demand_manifest.json
+    coverage_output: assets/reference_coverage_plan.json
+    gate_output: gates/asset_demand_coverage_gate.json
+    tier_policies:
+      series_core: series_library_full_pack
+      recurring: progressive_on_demand
+      episode_important: on_demand
+      background: inline_unless_closeup
+    full_pack_tiers: [series_core]
+    forbid_episode_block_on_series_library_backfill: true
+    require_consumer_shot_ids_for_generation: true
+    forbid_orphan_generation: true
+    default_angle_pack_mode: on_demand
+    allow_text_only_risk_levels: [low]
   prompt_packaging:
     skill: deepwhite-image-prompt-builder
     mode: PACKAGER_ONLY
@@ -86,6 +105,8 @@ default_settings:
     registry_snapshot: assets/reference_registry.json
     async_fallback: pause_and_resume
     max_submit_attempts: 3
+    canonical_entrypoint: scripts/submit_asset_job.py
+    forbid_direct_skill_sender: true
     success_requires_all_required_assets_approved: true
     default_job_settings:
       model: gemini-3.1-flash-image
@@ -93,6 +114,40 @@ default_settings:
       review_model: gemini-2.5-flash
       review_min_score: 85
       review_max_retries: 2
+      max_image_generations: 3
+      acceptance_policy: strict_only
+    pre_dispatch_gates:
+      - scripts/validate_asset_render_specs.py
+      - scripts/asset_retry_guard.py
+      - payload_body_and_x_openclaw_payload_sha256_match
+      - required_reference_count_lte_2
+      - prompt_semantic_contradictions_empty
+    receiver_contract:
+      preserve_signed_payload_body: true
+      merge_trusted_runtime_controls_from_webhook_envelope: true
+      preserve_fields:
+        - asset_lineage_id
+        - requirement_sha256
+        - revision_reason_code
+        - acceptance_policy
+        - qa_failure_policy
+        - style_contract_sha256
+        - supersedes_asset_id
+        - identity_fingerprint
+    worker_contract:
+      retry_with_structured_qa_feedback: true
+      strict_terminal_success_status: accepted
+      forbid_fallback_as_reusable_or_approved: true
+      require_png_magic_for_png_filename: true
+      atomically_update_reference_registry: true
+      atomically_write_terminal_job_manifest: true
+    registry_qa_contract:
+      review_authority: n8n_structured_visual_qa
+      require_pass: true
+      require_zero_hard_failures: true
+      require_production_safety_complete: true
+      require_ambiguity_reasons_empty: true
+      require_reference_injection_evidence_when_declared: true
     opt_out_phrases:
       - 只输出提示词
       - 不要生图
@@ -143,76 +198,109 @@ workflow:
     hard_gate: [scene_asset_coverage_gate.passed == true, scene_coverage_ratio == 1.0, primary_binding_ratio == 1.0, authoritative_scene_index_used == true]
     success_status: scene_assets_planned
 
+  stage_27_shot_intent:
+    name: Pre-generation Shot Intent and Visual Demand Discovery
+    skill: deepwhite-asset-demand-resolver
+    invocation: {mode: SHOT_INTENT_ONLY}
+    inputs: [project.json, script/episode_script.md, script/scene_index.json, continuity/continuity_handoff.json, handoffs/scene_asset_handoff.json]
+    outputs: [shots/shot_intent_manifest.json, shots/shot_intent_bindings.json]
+    constraints: [not_a_final_shotlist, no_image_generation, inherit_scene_asset_handoff_exactly]
+    hard_gate: [every_intent_has_shot_id_and_scene_binding, every_visual_demand_has_consumer_shot_ids]
+    success_status: shot_intent_ready
+
+  stage_28_asset_demand_resolution:
+    name: Minimum Asset Demand Resolution
+    skill: deepwhite-asset-demand-resolver
+    runner: scripts/resolve_asset_demand.py
+    runner_args: [--intent, shots/shot_intent_manifest.json, --registry, assets/reference_registry.json, --manifest-out, assets/asset_demand_manifest.json, --coverage-out, assets/reference_coverage_plan.json, --gate-out, gates/asset_demand_coverage_gate.json]
+    inputs: [shots/shot_intent_manifest.json]
+    optional_inputs: [assets/reference_registry.json]
+    outputs: [assets/asset_demand_manifest.json, assets/reference_coverage_plan.json, gates/asset_demand_coverage_gate.json]
+    hard_gate:
+      - "passed == true"
+      - "coverage_ratio == 1.0"
+      - "orphan_generation_asset_ids == []"
+    success_status: asset_demand_resolved
+
   stage_30_base_continuity_design:
-    name: Base Continuity Asset Design
+    name: Demand-bound Base Continuity Asset Design
     skill: deepwhite-scene-pack-builder
     invocation: {mode: PIPELINE_BATCH, pass: BASE_ASSET}
-    inputs: [project.json, script/scene_index.json, world/, continuity/continuity_handoff.json, assets/scene_asset_plan.json, assets/location_asset_requirements.json, handoffs/scene_asset_handoff.json]
+    inputs: [project.json, script/scene_index.json, world/, continuity/continuity_handoff.json, assets/scene_asset_plan.json, assets/location_asset_requirements.json, handoffs/scene_asset_handoff.json, shots/shot_intent_manifest.json, assets/asset_demand_manifest.json]
     outputs: [assets/continuity/, assets/asset_list.json, assets/expanded_asset_list.base.json, assets/asset_dependency_graph.base.json, assets/reference_plan.base.json]
-    constraints: [preserve_scene_id_location_id_and_location_asset_id, do_not_replace_scene_asset_handoff]
+    constraints: [preserve_scene_id_location_id_and_location_asset_id, do_not_replace_scene_asset_handoff, expand_only_generation_wave_0, do_not_generate_full_angle_pack_for_episode_important]
     success_status: base_assets_designed
 
   stage_32_base_prompt_packaging:
     name: Verbatim Base Prompt Packaging
     skill: deepwhite-image-prompt-builder
     invocation: {mode: PACKAGER_ONLY, source_pass: BASE_ASSET}
-    inputs: [assets/expanded_asset_list.base.json, assets/reference_plan.base.json, handoffs/scene_asset_handoff.json]
+    inputs: [assets/expanded_asset_list.base.json, assets/reference_plan.base.json, handoffs/scene_asset_handoff.json, assets/asset_demand_manifest.json, gates/asset_demand_coverage_gate.json]
     outputs: [prompts/base_assets/, assets/image_naming_manifest.json, dispatch/asset_jobs/base-assets.json]
     validator: deepwhite-image-prompt-builder/scripts/validate_packager_handoff.py
     validator_args: [--expanded assets/expanded_asset_list.base.json, --job dispatch/asset_jobs/base-assets.json, --out gates/packager_handoff_gate.base.json]
-    hard_gate: [all_lock_hashes_match == true, scene_bindings_unchanged == true]
+    job_contract:
+      demand_manifest_path: assets/asset_demand_manifest.json
+      demand_gate_path: gates/asset_demand_coverage_gate.json
+      demand_wave: 0
+      default_angle_pack_mode: on_demand
+    hard_gate: [all_lock_hashes_match == true, scene_bindings_unchanged == true, packaged_asset_ids_equal_demand_wave_0 == true]
     success_status: base_asset_job_ready
 
   stage_35_base_asset_dispatch:
     name: Generate and Verify Base Anchors Through n8n
     skill: deepwhite-n8n-asset-dispatcher
-    invocation: {mode: CONTINUITY_V2, stage_filter: anchor, wait_for_registry: true, registry_snapshot: assets/reference_registry.json}
+    invocation: {mode: CONTINUITY_V2, stage_filter: anchor, demand_wave: 0, wait_for_registry: true, registry_snapshot: assets/reference_registry.json}
     command: >-
-      node deepwhite-n8n-asset-dispatcher/scripts/send-continuity-job-to-n8n.mjs
-      dispatch/asset_jobs/base-assets.json --wait
-      --registry-snapshot=assets/reference_registry.json
+      python3 scripts/submit_asset_job.py
+      --job projects/{project_id}/dispatch/asset_jobs/base-assets.json
     inputs: [dispatch/asset_jobs/base-assets.json]
-    outputs: [dispatch/base_submission.json, assets/reference_registry.json]
-    hard_gate: [all_required_assets_approved == true, registry_job_binding_valid == true, registry_payload_sha256_valid == true, registry_file_hashes_valid == true]
+    outputs: [dispatch/last_submission.json, assets/reference_registry.json]
+    hard_gate: [all_demand_wave_0_assets_approved == true, orphan_generation_asset_count == 0, registry_job_binding_valid == true, registry_payload_sha256_valid == true, registry_file_hashes_valid == true]
     success_status: base_assets_approved
 
   stage_40_preliminary_shotlist:
-    name: Preliminary Shotlist for Shot Asset Discovery
+    name: Draft Shotlist from Shot Intent and Approved Anchors
     skill: deepwhite-shotlist-builder-zh-user
     mode: AUTO_GATE_MODE
-    inputs: [script/episode_script.md, script/scene_index.json, continuity/continuity_handoff.json, handoffs/scene_asset_handoff.json, assets/reference_registry.json]
+    inputs: [script/episode_script.md, script/scene_index.json, continuity/continuity_handoff.json, handoffs/scene_asset_handoff.json, shots/shot_intent_manifest.json, shots/shot_intent_bindings.json, assets/asset_demand_manifest.json, assets/reference_registry.json]
     outputs: [shots/shotlist.draft.md, shots/shot_scene_bindings.draft.json]
-    hard_gate: [every_draft_shot_inherits_scene_handoff]
+    hard_gate: [every_draft_shot_inherits_scene_handoff, every_draft_shot_traces_to_shot_intent]
     success_status: preliminary_shotlist_ready
 
   stage_42_shot_asset_gap:
     name: Shot Asset Gap Pass
     skill: deepwhite-scene-pack-builder
     invocation: {mode: PIPELINE_BATCH, pass: SHOT_ASSET_GAP}
-    inputs: [shots/shotlist.draft.md, shots/shot_scene_bindings.draft.json, handoffs/scene_asset_handoff.json, assets/continuity/, assets/reference_registry.json]
+    inputs: [shots/shotlist.draft.md, shots/shot_scene_bindings.draft.json, shots/shot_intent_manifest.json, assets/asset_demand_manifest.json, handoffs/scene_asset_handoff.json, assets/continuity/, assets/reference_registry.json]
     outputs: [assets/shot_asset_requests.json, assets/expanded_asset_list.shot.json, assets/asset_dependency_graph.shot.json, assets/reference_plan.shot.json]
+    constraints: [expand_only_generation_wave_1, no_full_pack_backfill, every_asset_request_has_consumer_shot_ids]
     success_status: shot_asset_gap_ready
 
   stage_44_shot_prompt_packaging:
     name: Verbatim Shot Asset Prompt Packaging
     skill: deepwhite-image-prompt-builder
     invocation: {mode: PACKAGER_ONLY, source_pass: SHOT_ASSET_GAP}
-    inputs: [assets/expanded_asset_list.shot.json, assets/reference_plan.shot.json, assets/reference_registry.json, handoffs/scene_asset_handoff.json]
+    inputs: [assets/expanded_asset_list.shot.json, assets/reference_plan.shot.json, assets/reference_registry.json, assets/asset_demand_manifest.json, gates/asset_demand_coverage_gate.json, handoffs/scene_asset_handoff.json]
     outputs: [prompts/shot_assets/, dispatch/asset_jobs/shot-assets.json]
     validator: deepwhite-image-prompt-builder/scripts/validate_packager_handoff.py
     validator_args: [--expanded assets/expanded_asset_list.shot.json, --job dispatch/asset_jobs/shot-assets.json, --out gates/packager_handoff_gate.shot.json]
-    hard_gate: [all_lock_hashes_match == true, scene_bindings_unchanged == true]
+    job_contract:
+      demand_manifest_path: assets/asset_demand_manifest.json
+      demand_gate_path: gates/asset_demand_coverage_gate.json
+      demand_wave: 1
+      default_angle_pack_mode: on_demand
+    hard_gate: [all_lock_hashes_match == true, scene_bindings_unchanged == true, packaged_asset_ids_equal_demand_wave_1 == true]
     success_status: shot_asset_job_ready
 
   stage_46_derived_asset_dispatch:
     name: Generate and Verify Derived and Shot Assets
     skill: deepwhite-n8n-asset-dispatcher
-    invocation: {mode: CONTINUITY_V2, stage_filter: [derived, shot], wait_for_registry: true, registry_snapshot: assets/reference_registry.json}
+    invocation: {mode: CONTINUITY_V2, stage_filter: [derived, shot], demand_wave: 1, wait_for_registry: true, registry_snapshot: assets/reference_registry.json}
     command: >-
-      node deepwhite-n8n-asset-dispatcher/scripts/send-continuity-job-to-n8n.mjs
-      dispatch/asset_jobs/shot-assets.json --wait
-      --registry-snapshot=assets/reference_registry.json
-    skip_when: shot_asset_requests_count == 0
+      python3 scripts/submit_asset_job.py
+      --job projects/{project_id}/dispatch/asset_jobs/shot-assets.json
+    skip_when: demand_wave_1_generation_count == 0
     hard_gate: [all_required_assets_approved == true, rejected_required_asset_count == 0, failed_required_asset_count == 0, registry_job_binding_valid == true, registry_payload_sha256_valid == true, registry_file_hashes_valid == true]
     success_status: all_required_assets_approved
 

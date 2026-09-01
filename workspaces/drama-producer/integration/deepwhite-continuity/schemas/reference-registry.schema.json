@@ -27,12 +27,7 @@
           "asset_id",
           "status",
           "filename",
-          "path",
-          "job_id",
-          "payload_sha256",
-          "lock_hash",
-          "sha256",
-          "file_size"
+          "path"
         ],
         "properties": {
           "asset_id": {
@@ -52,26 +47,6 @@
           },
           "path": {
             "type": "string"
-          },
-          "job_id": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_-]+$"
-          },
-          "payload_sha256": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "lock_hash": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "sha256": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "file_size": {
-            "type": "integer",
-            "minimum": 0
           },
           "mime_type": {
             "type": "string"

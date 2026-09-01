@@ -37,7 +37,7 @@ metadata: {"openclaw":{"requires":{"bins":["node"],"env":["N8N_ASSET_WEBHOOK_URL
 
 ## 任务 JSON
 
-普通兼容任务使用 `references/ASSET_JOB_SCHEMA.md` 的 v1 结构；自动生产与连续性任务必须直接使用下方 v2.1 最高优先级契约。v1 核心结构：
+严格使用 `references/ASSET_JOB_SCHEMA.md`。核心结构：
 
 ```json
 {
@@ -111,7 +111,7 @@ n8n 接收状态：webhook_accepted_unverified / execution_confirmed
 
 <!-- BEGIN DEEPWHITE_CONTINUITY_DISPATCH_V2 -->
 
-# Continuity Asset Job v2.1（最高优先级）
+# Continuity Asset Job v2（最高优先级）
 
 当任务 `schema_version` 为 `2.x` 或包含 `reference_inputs` 时，必须使用连续资产派发模式。
 
@@ -128,26 +128,16 @@ lock_hash
 depends_on
 reference_inputs
 anchor_roles
-asset_role
-asset_kind
-angle_id
-layout_type
-contains_multiple_independent_assets
 ```
 
 派发前必须：
 
-1. 校验 project/job/asset ID 和 filename 均为安全 ASCII 值，禁止路径片段；
-2. 校验依赖图无环，外部依赖必须同时出现在 `reference_inputs`；
+1. 校验 asset_id 和 filename 唯一；
+2. 校验依赖图无环；
 3. 确认所有必需参考图声明包含 `approved_only: true`；
-4. 按四锁原文重新计算完整 `sha256:<64hex>`，不得只检查非空；
-5. 运行 `validate-continuity-job.mjs`；发送脚本也会再次执行同一验证；
-6. 使用 `send-continuity-job-to-n8n.mjs` 提交；`--dry-run` 不要求 Webhook 环境变量；
-7. 正式自动生产必须加 `--wait --registry-snapshot=assets/reference_registry.json`；
-8. 只有每个必需资产都为 `approved`，且 `job_id`、`payload_sha256`、`lock_hash`、文件大小和文件 SHA256 全部匹配，才算本阶段完成。
-9. 用于视频生产的角色、场景、异兽和关键道具必须拆成独立图片：`asset_role=video_reference`、`layout_type=single_view_clean`、`contains_multiple_independent_assets=false`，并提供独立 `angle_id`；禁止把多个视角拼进同一张图。
-
-`shared_asset_root` 只能来自 Gateway 的 `OPENCLAW_ASSET_SHARED_ROOT`，禁止由任务 Payload 指定。HTTP 2xx 仍只记录为 `webhook_accepted_unverified`。
+4. 运行 `validate-continuity-job.mjs`；
+5. 使用 `send-continuity-job-to-n8n.mjs` 提交；
+6. 共享目录可用时加 `--wait`，等待 reference registry 到达终态。
 
 不得删除额外连续性字段后降级为 v1 任务。
 

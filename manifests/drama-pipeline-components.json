@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "target": {
+    "repository": "slobys/openclaw-novel-author-suite",
+    "branch": "drama-pipeline",
+    "sync_direction": "local_to_github_only"
+  },
+  "agents": [
+    "novel-producer",
+    "drama-producer"
+  ],
+  "required_skills": [
+    "deepwhite-00-novel-series-orchestrator",
+    "deepwhite-screenwriting-v1",
+    "deepwhite-continuity-worldstate-zh",
+    "deepwhite-scene-asset-planner",
+    "deepwhite-asset-demand-resolver",
+    "deepwhite-scene-pack-builder",
+    "deepwhite-image-prompt-builder",
+    "deepwhite-n8n-asset-dispatcher",
+    "deepwhite-shotlist-builder-zh-user",
+    "deepwhite-shot-transition-builder-zh",
+    "deepwhite-n8n-video-dispatcher"
+  ],
+  "required_commands": [
+    "python3",
+    "node",
+    "ffmpeg",
+    "ffprobe",
+    "jq",
+    "git"
+  ],
+  "configuration_names": [
+    "OPENCLAW_HOME",
+    "OPENCLAW_ASSET_SHARED_ROOT",
+    "OPENCLAW_ASSET_HOOK_TOKEN",
+    "N8N_ASSET_WEBHOOK_URL",
+    "N8N_ASSET_WEBHOOK_SECRET",
+    "N8N_VIDEO_WEBHOOK_URL",
+    "N8N_VIDEO_WEBHOOK_SECRET"
+  ],
+  "new_required_files": [
+    "workspaces/drama-producer/scripts/resolve_asset_demand.py",
+    "workspaces/drama-producer/scripts/send_asset_job_to_n8n.mjs",
+    "workspaces/drama-producer/scripts/validate_angle_pack_recovery.py",
+    "workspaces/drama-producer/skills/deepwhite-asset-demand-resolver/SKILL.md",
+    "workspaces/drama-producer/tests/test_asset_demand_resolver.py",
+    "workspaces/drama-producer/tests/test_asset_demand_workflow_contract.py"
+  ],
+  "release_blockers": [
+    "missing_distributable_n8n_video_workflow_template",
+    "missing_unified_ffmpeg_composition_entrypoint",
+    "hardcoded_local_paths_need_installer_parameterization",
+    "missing_post_install_end_to_end_smoke_test"
+  ],
+  "excluded_patterns": [
+    ".env",
+    "projects/**",
+    "memory/**",
+    "MEMORY.md",
+    "DREAMS.md",
+    ".learnings/**",
+    "USER.md",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/*.bak*",
+    "**/.git/**"
+  ]
+}

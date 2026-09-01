@@ -214,6 +214,11 @@ def update_status(
         attempt["updated_at"] = now()
         if reason_code:
             attempt["result_reason_code"] = reason_code
+        elif status == "accepted":
+            # A recovered same-job submission may first be recorded as a
+            # transport failure and later prove the immutable payload was
+            # accepted.  Do not retain a stale failure reason on success.
+            attempt.pop("result_reason_code", None)
         if evidence:
             attempt["evidence"] = evidence
         attempt.setdefault("history", []).append({"status": status, "reason_code": reason_code, "at": now()})

@@ -1,83 +1,142 @@
-schema_version: "2.1.0"
-pipeline_profile: scene_bound_auto_v1.2
-authority: mirror_index_only
-must_match: drama-workflow.yaml
-project: {name: AI Short Drama Production Pipeline, agent: drama-producer}
+schema_version: "2.0.0"
+project:
+  name: AI Short Drama Production Pipeline
+  agent: drama-producer
 
 workflow:
-  stage_10_screenplay:
-    skill: deepwhite-screenwriting-v1
-    output: [script/episode_script.md, script/scene_index.json]
-  stage_20_world_state:
-    skill: deepwhite-continuity-worldstate-zh
-    invocation: {mode: AUTO_MACHINE_MODE}
-    output: [world/characters.json, world/locations.json, world/props.json, continuity/continuity_handoff.json]
-  stage_25_scene_asset_plan:
-    skill: deepwhite-scene-asset-planner
-    authority: scene_id_to_location_asset_binding
-    output: [assets/scene_asset_plan.json, assets/location_asset_requirements.json, handoffs/scene_asset_handoff.json, gates/scene_asset_coverage_gate.json]
-  stage_30_base_continuity_design:
-    skill: deepwhite-scene-pack-builder
+  phase_1_screenwriting:
+    skill: [deepwhite-screenwriting-v1]
+    input: [小说文本, 故事方向, 人物设定]
+    output: [script/story_outline.md, script/episode_script.md]
+
+  phase_2_world_state:
+    skill: [deepwhite-continuity-worldstate-zh]
+    input: [script/]
+    output: [world/characters.json, world/locations.json, world/props.json]
+
+  phase_3_asset_inventory:
+    action: [create_asset_list]
+    input: [script/, world/, project.json]
+    output: [assets/asset_list.json]
+
+  phase_3a_shot_intent:
+    skill: [deepwhite-asset-demand-resolver]
+    invocation: {mode: SHOT_INTENT_ONLY}
+    input: [project.json, script/, world/, handoffs/scene_asset_handoff.json]
+    output: [shots/shot_intent_manifest.json, shots/shot_intent_bindings.json]
+
+  phase_3b_asset_demand:
+    skill: [deepwhite-asset-demand-resolver]
+    action: [resolve_minimum_asset_cover]
+    input: [shots/shot_intent_manifest.json, assets/reference_registry.json]
+    output: [assets/asset_demand_manifest.json, assets/reference_coverage_plan.json, gates/asset_demand_coverage_gate.json]
+
+  phase_4_base_continuity_design:
+    skill: [deepwhite-scene-pack-builder]
     invocation: {mode: PIPELINE_BATCH, pass: BASE_ASSET}
-    constraint: preserve_scene_asset_handoff
-  stage_32_base_prompt_packaging:
-    skill: deepwhite-image-prompt-builder
+    input: [project.json, script/, world/, assets/asset_list.json, shots/shot_intent_manifest.json, assets/asset_demand_manifest.json]
+    output:
+      - assets/continuity/
+      - assets/expanded_asset_list.base.json
+      - assets/asset_dependency_graph.base.json
+      - assets/reference_plan.base.json
+
+  phase_5_base_prompt_packaging:
+    skill: [deepwhite-image-prompt-builder]
     invocation: {mode: PACKAGER_ONLY, source_pass: BASE_ASSET}
-  stage_35_base_asset_generation:
-    skill: deepwhite-n8n-asset-dispatcher
+    input: [assets/continuity/, assets/expanded_asset_list.base.json, assets/reference_plan.base.json]
+    output: [prompts/base_assets/, assets/image_naming_manifest.json, dispatch/asset_jobs/base-assets.json]
+
+  phase_6_base_asset_generation:
+    skill: [deepwhite-n8n-asset-dispatcher]
     invocation: {mode: CONTINUITY_V2, stage_filter: anchor, wait_for_registry: true}
-    success_requires: all_required_assets_approved
-  stage_40_preliminary_shotlist:
-    skill: deepwhite-shotlist-builder-zh-user
-    purpose: discover_shot_asset_gaps_without_rebinding_scenes
-  stage_42_shot_asset_gap:
-    skill: deepwhite-scene-pack-builder
+    input: [dispatch/asset_jobs/base-assets.json]
+    output: [assets/reference_registry.json]
+
+  phase_7_shotlist:
+    skill: [deepwhite-shotlist-builder-zh-user]
+    input: [script/, world/, assets/continuity/, assets/reference_registry.json, project.json]
+    output: [shots/shotlist.md]
+
+  phase_8_shot_asset_gap:
+    skill: [deepwhite-scene-pack-builder]
     invocation: {mode: PIPELINE_BATCH, pass: SHOT_ASSET_GAP}
-  stage_44_shot_prompt_packaging:
-    skill: deepwhite-image-prompt-builder
+    input: [shots/shotlist.md, assets/continuity/, assets/reference_registry.json]
+    output:
+      - assets/shot_asset_requests.json
+      - assets/expanded_asset_list.shot.json
+      - assets/asset_dependency_graph.shot.json
+      - assets/reference_plan.shot.json
+
+  phase_9_shot_prompt_packaging:
+    skill: [deepwhite-image-prompt-builder]
     invocation: {mode: PACKAGER_ONLY, source_pass: SHOT_ASSET_GAP}
-  stage_46_derived_asset_generation:
-    skill: deepwhite-n8n-asset-dispatcher
+    input: [assets/expanded_asset_list.shot.json, assets/reference_plan.shot.json, assets/reference_registry.json]
+    output: [prompts/shot_assets/, dispatch/asset_jobs/shot-assets.json]
+
+  phase_10_transition:
+    skill: [deepwhite-shot-transition-builder-zh]
+    input: [shots/, assets/continuity/, assets/reference_registry.json, project.json]
+    output: [transition/transition_plan.md]
+
+  phase_11_final_audit:
+    action: [final_package_check]
+    input: [project.json, script/, world/, assets/, prompts/, shots/, transition/]
+    output: [review/final_package_check.md]
+
+  phase_12_derived_asset_generation:
+    skill: [deepwhite-n8n-asset-dispatcher]
     invocation: {mode: CONTINUITY_V2, stage_filter: [derived, shot], wait_for_registry: true}
-    success_requires: all_required_assets_approved
-  stage_50_final_shotlist:
-    skill: deepwhite-shotlist-builder-zh-user
-    authority: actual_approved_assets_plus_scene_asset_handoff
-  stage_60_transition:
-    skill: deepwhite-shot-transition-builder-zh
-    optional: true
-    constraint: must_not_change_scene_or_location_binding
-  stage_70_video_dispatch:
-    skill: deepwhite-n8n-video-dispatcher
-    success_requires: execution_or_result_evidence
-  stage_90_final_composition: {action: verify_final_video}
-  stage_95_pipeline_evidence: {skill: deepwhite-00-novel-series-orchestrator}
-  stage_100_series_commit: {action: commit_verified_episode}
+    input: [dispatch/asset_jobs/shot-assets.json, assets/reference_registry.json]
+    output: [assets/reference_registry.json, dispatch/last_submission.json]
 
 rules:
   authority_order:
-    - script_scene_index
-    - continuity_world_state
-    - scene_asset_planner_handoff
-    - scene_pack_child_asset_design
-    - image_prompt_packaging
-    - approved_reference_registry
-    - final_shot_bindings
-  hard_invariants:
-    - scene_pack_never_replaces_scene_asset_planner
-    - packager_never_rewrites_hard_locks
-    - one_child_asset_one_image
-    - registry_entries_bind_job_payload_lock_and_file_hash
-    - rejected_or_failed_required_assets_never_count_as_success
-    - http_2xx_never_means_generation_completed
-    - final_video_ready_is_the_only_episode_success_status
-  aspect_ratio_defaults:
-    location: "16:9"
-    scene: "16:9"
-    character: "9:16"
-    animal: "9:16"
-    creature: "9:16"
-    prop: "9:16"
-    storyboard: "16:9"
-    shot: "16:9"
-  human_review_required_only_for: [external_publish, material_change_to_user_locked_story_or_style, unresolved_critical_after_two_revisions]
+    - script_and_world_state
+    - deepwhite_scene_pack_builder_manifest
+    - deepwhite_image_prompt_builder_packaging
+    - n8n_generation_and_registry
+
+  prompt_packaging:
+    mode: PACKAGER_ONLY
+    forbid_scene_redesign: true
+    forbid_lock_rewrite: true
+    require_lock_hash_match: true
+
+  asset_model:
+    logical_parent_file: assets/asset_list.json
+    generated_child_file_base: assets/expanded_asset_list.base.json
+    generated_child_file_shot: assets/expanded_asset_list.shot.json
+    one_child_asset_one_image: true
+
+  aspect_ratio:
+    priority:
+      - child_asset_explicit
+      - category_default
+      - project_video_ratio
+      - system_default
+    category_defaults:
+      location: "16:9"
+      scene: "16:9"
+      character: "9:16"
+      animal: "9:16"
+      creature: "9:16"
+      prop: "9:16"
+      storyboard: "16:9"
+      shot: "16:9"
+
+  reference_policy:
+    registry: assets/reference_registry.json
+    approved_only: true
+    forbidden_statuses: [failed, rejected, superseded, unreviewed]
+    actual_image_injection_required: true
+
+  stop_after:
+    - n8n_derived_assets_terminal
+
+  human_review_required:
+    - video_prompt_generation
+    - video_generation
+    - comfyui
+    - automatic_rendering
+    - external_publish

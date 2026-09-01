@@ -30,39 +30,6 @@ description: 将剧本、场景文本、分场大纲或分镜表转换为中文�
 | 用户指出某些画面接不上 | 先做断点诊断，再补世界状态与修复规则 |
 | 只有故事梗概 | 只建立可确认的高层连续性，不伪造镜头级细节 |
 
-## AUTO_MACHINE_MODE
-
-当调用参数包含 `mode: AUTO_MACHINE_MODE` 时，本模式优先于下面三个交互 Gate。它用于已确认单集剧本的自动生产，不向用户询问“确认范围/基线/连续性”，而是一次写完并验证以下机器文件：
-
-```text
-world/characters.json
-world/locations.json
-world/props.json
-continuity/continuity_handoff.json
-```
-
-必须读取 `script/scene_index.json`，并把其中全部 `scene_id` 作为覆盖分母。输出要求见 `references/AUTO_MACHINE_OUTPUT.md`，结构示例见 `templates/world-state-bundle.example.json`。
-
-完成后运行：
-
-```bash
-python3 scripts/validate_world_state_bundle.py \
-  --project-root . \
-  --scene-index script/scene_index.json \
-  --out gates/world_state_bundle_gate.json
-```
-
-只有 Gate 满足以下条件才可交给 Scene Asset Planner：
-
-- `passed == true`；
-- `scene_coverage_ratio == 1.0`；
-- `zero_unknown_references == true`；
-- 三类实体 ID 唯一；
-- 每个 Scene 的开场状态、变化和镜尾状态均为对象；
-- 所有状态都有剧本证据或明确标记为 `unknown`，不得用猜测补满。
-
-本模式仍不得规划图片角度、生成 Prompt 或给 Scene 绑定 `location_asset_id`；这些属于 Scene Asset Planner 与 Scene Pack。
-
 ## Hard Gates
 
 ### 1. Scope Confirmation Gate
