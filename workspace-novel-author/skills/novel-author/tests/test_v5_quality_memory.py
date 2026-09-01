@@ -383,7 +383,7 @@ class ServerCapabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); cap=root/"cap.json"
             cap.write_text(json.dumps({
-                "engineVersion":"0.4.7",
+                "engineVersion":"0.4.8",
                 "enforcedServerSide":True,"minChapterHanChars":2600,
                 "commitRehash":True,"auditHashBinding":True,"completeAuditCoverage":True,
                 "independentQualityReceipt":True,"requestIdIdempotency":True,
@@ -400,11 +400,11 @@ class ServerCapabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); cap=root/"status.json"
             cap.write_text(json.dumps({
-                "engineVersion":"0.4.7",
+                "engineVersion":"0.4.8",
                 "storyLedgers":{"chapterLengthGate":{"minHanChars":3200,"enforcedServerSide":True},"closureReceiptRequired":True,"requiredAuditCategories":[f"c{i}" for i in range(17)]},
                 "serverCapabilities":{
                     "serverGateVerified":True,
-                    "engineVersion":"0.4.7",
+                    "engineVersion":"0.4.8",
                     "hanLengthRecount":True,
                     "auditBodyHashBinding":True,
                     "completeAuditCoverage":True,

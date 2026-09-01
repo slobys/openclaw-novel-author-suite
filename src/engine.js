@@ -31,7 +31,7 @@ import {
   writeJson
 } from "./utils.js";
 
-export const ENGINE_VERSION = "0.4.7";
+export const ENGINE_VERSION = "0.4.8";
 export const ENGINE_SCHEMA_VERSION = 2;
 
 function delay(ms) {

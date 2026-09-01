@@ -1,6 +1,6 @@
-# Novel Engine 0.4.7 — Public Deployment Edition
+# Novel Engine 0.4.8 — Tool-Safe Isolation Edition
 
-面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.4.7 保留项目写锁有限等待、租约心跳和陈旧锁安全回收，并与 Novel Author V5.4.0 Workspace 一起提供公开部署。`novel_prepare_chapter` 默认返回角色化 compact packet，减少长篇主会话重复上下文；项目数据格式不变。本版安装器兼容 OpenClaw 2026.8.1 的插件能力授权。
+面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.4.8 保留项目写锁有限等待、租约心跳和陈旧锁安全回收，并与 Novel Author V5.4.1 Tool-Safe Isolation Workspace 一起提供公开部署。`novel_prepare_chapter` 默认返回角色化 compact packet，减少长篇主会话重复上下文；项目数据格式不变。隔离 Writer/Reviewer 只返回结构化结果，父会话负责落盘与 Hash 绑定。
 
 ## 核心能力
 

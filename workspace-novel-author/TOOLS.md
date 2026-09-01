@@ -1,4 +1,4 @@
-# novel-author 运行工具契约 — V5.4.0 Balanced-Lite / Novel Engine 0.4.7
+# novel-author 运行工具契约 — V5.4.1 Tool-Safe Isolation / Novel Engine 0.4.8
 
 本文件用于启动时确认能力，不替代 `novel-author-workflow.yaml` 的阶段裁决。只承认当前 OpenClaw runtime 真实注册的工具。
 
@@ -55,7 +55,7 @@
 
 独立审稿前分别请求 `role=continuity-auditor` 和 `role=reader-editor`。只有关键章或诊断才用 `profile=full`；禁止把 full `packet` 与 full `context` 同时塞给普通 Writer。
 
-正式写章至少要求项目/配置、prepare、audit record、quality record、commit、commit status、read、closure status 和 integrity 工具可用。缺失 `novel_chapter_quality_record`、`novel_commit_status` 或 `novel_project_integrity_check` 时，只能产出草稿，不能宣称 V5 服务端闭环完成。
+正式写章只在主会话检查项目/配置、prepare、audit record、quality record、commit、commit status、read、closure status、integrity、文件写入和命令执行能力。缺失 `novel_chapter_quality_record`、`novel_commit_status` 或 `novel_project_integrity_check` 时，只能产出草稿，不能宣称 V5 服务端闭环完成。不得把这组能力要求套到隔离 Writer 或 Reviewer。
 
 ## 隔离写作与审稿能力
 
@@ -64,15 +64,46 @@
 推荐的真实生命周期：
 
 1. 每章先用 `sessions_spawn(context=isolated, thinking=medium, runTimeoutSeconds=900)` 创建一个全新 Writer。主会话不得自己写正文；
-2. Writer 只接收 compact writer packet，把正文、计划和17类随稿审计写入当前 chapter evidence 目录，最终回复只返回路径、Hash、汉字数和 session ID；
+2. Writer 只接收 compact writer packet，最终只返回一个 `novel-writer-return-v1` JSON；叶子会话不需要也不得要求文件、命令、`novel_*`、`sessions_spawn/send/history` 或本地 Gate 工具；
 3. spawn 后立即用 `job_state.py register-task` 保存 `runId`、`childSessionKey`，从 `subagents(action=list)` 获得 `taskId` 后补记；
-4. Writer 完成后运行 `writer_handoff_gate.py` 和 `chapter_length.py`。不足硬下限时只用 `sessions_send` 把准确差额发回同一个 Writer 一次，不创建新 Writer；
-5. 正文定稿后，再用各自 compact packet 创建 Continuity Auditor 与 Reader Editor；普通章 `thinking=low`，关键章才 `high`；
+4. 主会话用 `sessions_history` 取得真实最终回复，原样保存后执行 `materialize_session_handoff.py writer`，再运行 `writer_handoff_gate.py` 和 `chapter_length.py`。不足硬下限时只用 `sessions_send` 把准确差额发回同一个 Writer 一次，不创建新 Writer；
+5. 正文定稿后，再用各自 compact packet 创建 Continuity Auditor 与 Reader Editor；它们只返回 `novel-review-return-v1` JSON，主会话用 `materialize_session_handoff.py reviewer` 生成审稿文件；普通章 `thinking=low`，关键章才 `high`；
 6. 所需创建请求都得到 `status=accepted` 后调用 `sessions_yield` 等待推送，不轮询；恢复后先运行 job Guard，再用 `sessions_history` 读取最终回执；
 7. 正文修订时优先用 `sessions_send` 让原三个子会话处理新 Hash；只有原会话不可访问、失败、超时或角色错误时才创建替代会话；
 8. 任何创建、等待、回收或替换动作都必须记录真实标识；没有真实 ID 和成功结果时不得声称写作或审稿完成。
 
 若当前 OpenClaw 的 `sessions_spawn` Schema 支持 `visible=true`，Writer 可以创建为 Dashboard 可见会话；不支持时必须直接使用隐藏的 isolated session，禁止因为可见性字段报错而自动重复 spawn。
+
+### 工具受限子会话回执
+
+Writer 必须只返回以下 JSON，不要 Markdown 说明；`bodySha256` 与 session ID 可以省略，由父会话使用真实结果补齐：
+
+```json
+{
+  "schemaVersion": "novel-writer-return-v1",
+  "chapterNo": 17,
+  "title": "纯标题",
+  "plan": { "alternativesConsidered": 2, "selected": "本章方案" },
+  "body": "正文全文",
+  "audit": { "decision": "pass", "checks": {}, "issues": [] }
+}
+```
+
+Reviewer 必须只返回：
+
+```json
+{
+  "schemaVersion": "novel-review-return-v1",
+  "chapterNo": 17,
+  "reviewerRole": "continuity-auditor",
+  "conclusion": "pass",
+  "checks": {},
+  "issues": [],
+  "summary": ""
+}
+```
+
+子会话声称缺少 `sessions_spawn`、`novel_*` 或文件工具时，主会话不得尝试给它恢复这些权限；应检查下发任务是否错误地包含了父会话职责。只有子会话连结构化最终回复都无法返回时，才属于 Writer 启动失败。
 
 ## 停止与后台任务取消
 

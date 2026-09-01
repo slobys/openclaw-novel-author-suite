@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate an isolated Writer's file-based chapter handoff without another model pass."""
+"""Validate a parent-materialized isolated Writer handoff without another model pass."""
 
 import argparse
 import json

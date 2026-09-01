@@ -1,4 +1,4 @@
-# Novel Author Agent Operating Contract — V5.4.0 Balanced-Lite / Novel Engine 0.4.7
+# Novel Author Agent Operating Contract — V5.4.1 Tool-Safe Isolation / Novel Engine 0.4.8
 
 ## 1. 身份与目标
 
@@ -8,7 +8,7 @@
 
 涉及小说项目的查询、写作、保存、修订或恢复前，依次读取：
 
-1. `TOOLS.md`：确认当前 runtime 真实注册的 Novel Engine 0.4.7 工具、隔离写作/审稿与取消能力；
+1. `TOOLS.md`：分别确认主会话的 Novel Engine 0.4.8/文件/命令/会话编排工具，以及隔离 Writer/Reviewer 的结构化返回能力；
 2. `novel-author-workflow.yaml`：唯一机器流程、状态、Gate 与失败策略；
 3. `skills/novel-author/SKILL.md`：创作方法和按需协议入口。
 
@@ -41,7 +41,8 @@
 - 同一项目同一时刻只允许一个活动 job、一个 Writer。
 - 多章严格串行：上一章 engine commit、服务端 Closure、integrity gate 完成后才启动下一章。
 - 主会话只负责编排、确定性 Gate 和 Engine 提交，禁止在主会话撰写、扩写或重写正文。
-- 每章必须新建一个 `context=isolated` 的 Writer session；Writer 只读取角色化精简资料包，不继承主聊天历史。运行时支持 `visible=true` 时可以显示为 Dashboard 会话，不支持时使用隐藏隔离会话且不得为了可见性重试 spawn。
+- 每章必须新建一个 `context=isolated` 的 Writer session；Writer 只读取角色化精简资料包，不继承主聊天历史。叶子 Writer 没有文件、命令、`novel_*` 或会话工具是合法且推荐的运行形态，启动 Gate 不得要求它拥有这些工具。
+- Writer/Reviewer 只返回一个严格 JSON 对象，不直接写 Workspace、不调用 Gate、不调用 Engine、也不创建子会话；主会话读取真实 completion 后，用 `materialize_session_handoff.py` 落盘并绑定真实 session ID 与 canonical SHA-256。
 - Writer、Continuity Auditor、Reader Editor 必须逐章使用三个真实且不同的 session ID；禁止虚构 ID。
 - 普通章节 Writer 默认 `thinking=medium`，两个审稿会话默认 `thinking=low`；只有用户明确要求、卷末/重大转折/终局等关键章才提升为 `high`。
 - `sessions_spawn` 成功后必须立即把 `taskId`（取得后）、`runId` 和 `childSessionKey` 登记到当前 job；没有登记不得进入等待阶段。
@@ -81,7 +82,7 @@ Writer 精简资料包应覆盖本章大纲、篇幅/类型规格、上一章末
 
 先解析项目 `writingContract`。默认规格为：硬下限 2000、理想目标 2600、建议上限 3200；项目配置可覆盖默认值。理想目标不是最低门槛，正文达到项目 `minHanChars` 后必须直接进入后续 Gate，不得为了凑到 `targetMinHanChars` 自动扩写。
 
-Writer 必须把 `plan.json`、`chapter.md` 和绑定最终正文 Hash 的 `writer-audit.json` 写入本章 evidence 目录，只向主会话返回路径、Hash、汉字数和 Writer session ID。主会话先运行 `writer_handoff_gate.py` 与 `chapter_length.py`，不得为了检查而再次进行一次模型通读。
+Writer 必须在唯一最终回复中返回 `novel-writer-return-v1` JSON，包含纯标题、计划、正文和17类随稿审计。它不得声称已经写文件或调用 Engine。主会话把该回复原样保存为临时 source return，使用 `materialize_session_handoff.py writer` 生成 `plan.json`、`chapter.md`、`writer-audit.json` 和 materialize receipt，再运行 `writer_handoff_gate.py` 与 `chapter_length.py`；主会话不得为了检查而再次进行一次模型通读。
 
 首次长度检查必须保存包含正文 Hash 与汉字数的 receipt。只有低于项目硬下限时才允许把准确差额发回同一个 Writer session 做一次定点扩写；不得新建 Writer，不得由主会话补字。修订后必须调用 `draft_revision_gate.py`，证明正文 Hash 已变化且达到硬下限。正文 Hash 不变、修订后仍不足或试图进行第二次自动修订时，立即进入 `blocked`。口头输出“现在扩写”“真正重写”等说明不算正文变化，禁止循环输出或重复提交相同正文。
 
@@ -89,7 +90,7 @@ Writer 必须把 `plan.json`、`chapter.md` 和绑定最终正文 Hash 的 `writ
 
 1. 本地长度与 Payload Gate 通过；
 2. `novel_chapter_audit_record` 使用隔离 Writer 对最终正文随稿生成、并经 `writer_handoff_gate.py` 验证的完整17类审计；主会话不得另起一次语义审计；
-3. Continuity Auditor 与 Reader Editor 均为独立真实 session，且绑定同一正文 Hash；
+3. Continuity Auditor 与 Reader Editor 均为独立真实 session；它们返回 `novel-review-return-v1` JSON，由主会话落盘并绑定同一正文 Hash；
 4. Genre Gate 与 provisional Chapter Signature 已生成；
 5. `novel_chapter_quality_record` 返回 `qualityPass=true`；
 6. 本地 `precommit_gate.py` 通过；

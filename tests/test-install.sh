@@ -40,10 +40,11 @@ export FAKE_OPENCLAW_LOG="${TEST_ROOT}/openclaw.log"
 bash "${REPO_ROOT}/install.sh"
 
 test -f "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
-grep -q 'V5.4.0' "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
+grep -q 'V5.4.1' "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
+test -f "${OPENCLAW_STATE_DIR}/workspace-novel-author/skills/novel-author/scripts/materialize_session_handoff.py"
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-author/memory/private.md")" = 'private memory'
 find "${OPENCLAW_STATE_DIR}/backups/novel-author-suite" -name AGENTS.md -type f | grep -q .
-grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.7 --force --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
+grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.8 --force --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
 grep -q 'plugins enable novel-engine --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
 grep -q 'minChapterHanChars 2000 --strict-json' "${FAKE_OPENCLAW_LOG}"
 grep -q 'targetChapterHanChars 2600 --strict-json' "${FAKE_OPENCLAW_LOG}"
@@ -56,7 +57,7 @@ export FAKE_OPENCLAW_LEGACY=1
 bash "${REPO_ROOT}/install.sh"
 
 test "$(grep -c 'agents add novel-author' "${FAKE_OPENCLAW_LOG}")" -eq 1
-grep -q '^plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.7 --force$' "${FAKE_OPENCLAW_LOG}"
+grep -q '^plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.8 --force$' "${FAKE_OPENCLAW_LOG}"
 grep -q '^plugins enable novel-engine$' "${FAKE_OPENCLAW_LOG}"
 if grep -q 'agents.entries' "${FAKE_OPENCLAW_LOG}"; then
   printf 'installer must not write version-specific agent roster paths\n' >&2

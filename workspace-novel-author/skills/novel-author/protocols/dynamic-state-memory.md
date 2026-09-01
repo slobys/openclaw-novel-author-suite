@@ -4,7 +4,7 @@
 
 ## 权威原则
 
-- Novel Engine 0.4.7 的 `story/dynamic/state.json`、`story/memory/index.json` 和已提交正文是权威来源。
+- Novel Engine 0.4.8 的 `story/dynamic/state.json`、`story/memory/index.json` 和已提交正文是权威来源。
 - `.novel-runtime/derived/` 仅是可删除的本地镜像；与 engine 冲突时立即丢弃并重建。
 - 所有服务端派生记录必须绑定 `chapter/bodySha256` 或可追溯 `sourceRef/sourceSha256`。
 

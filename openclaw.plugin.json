@@ -2,7 +2,7 @@
   "id": "novel-engine",
   "name": "Novel Engine",
   "description": "V5 persistent novel engine with project writing contracts, independent quality gates, recoverable transactions, story ledgers and tiered memory.",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "skills": [
     "skills"
   ],

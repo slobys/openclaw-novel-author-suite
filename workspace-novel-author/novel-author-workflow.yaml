@@ -1,5 +1,5 @@
-schema_version: '1.4'
-pipeline_profile: novel_author_balanced_v5.4.0_engine_0.4.7
+schema_version: '1.5'
+pipeline_profile: novel_author_tool_safe_isolation_v5.4.1_engine_0.4.8
 source_of_truth: true
 agent_id: novel-author
 
@@ -47,6 +47,9 @@ safety:
   strict_serial_chapters: true
   cancellation_guard_before_every_stage_spawn_retry_and_completion_event: true
   isolated_child_sessions: spawn_writer_then_required_reviewers_with_role_scoped_packets
+  leaf_child_tools: structured_return_only
+  child_missing_file_exec_novel_or_session_tools_is_not_failure: true
+  parent_materializes_and_hash_binds_child_returns: true
   fresh_writer_session_per_chapter: true
   main_session_role: orchestration_only
   main_session_must_not_draft_or_expand_body: true
@@ -74,6 +77,7 @@ workflow:
       - novel_project_status
       - novel_project_config_read
       - verify_required_tool_capabilities
+      - verify_parent_tools_separately_from_leaf_child_contract
       - validate_server_capabilities
       - novel_project_integrity_check_repair_false_when_needed
     outputs:
@@ -82,6 +86,8 @@ workflow:
       - .novel-runtime/evidence/{job_id}/server-capabilities.json
     hard_gate:
       - required_v5_server_tools_available
+      - parent_has_file_write_command_and_session_orchestration
+      - leaf_child_can_return_one_structured_final_message
       - project_status_readable
       - server_gate_verified
       - no_other_active_project_job
@@ -113,6 +119,9 @@ workflow:
       - skills/novel-author/scripts/job_state.py_register_task
       - sessions_yield_once_for_writer_completion
       - ignore_completion_when_job_guard_denies
+      - read_exact_writer_completion_with_sessions_history
+      - save_exact_completion_as_writer-return-source.json
+      - skills/novel-author/scripts/materialize_session_handoff.py_writer
       - skills/novel-author/scripts/writer_handoff_gate.py
     writer_runtime:
       normal_chapter: {context: isolated, thinking: medium, runTimeoutSeconds: 900}
@@ -120,15 +129,26 @@ workflow:
       visible_dashboard_session: use_only_when_runtime_schema_supports_visible_true
       unsupported_visible_option: use_hidden_isolated_session_without_retry
     writer_contract:
-      receives: [compact_writer_packet, chapter_no, job_id, evidence_paths]
-      must_not_receive: [main_chat_history, full_prepare_context, unrelated_reference_prose]
-      must_write:
+      receives: [compact_writer_packet, chapter_no, output_schema_novel-writer-return-v1]
+      must_not_receive: [main_chat_history, full_prepare_context, unrelated_reference_prose, parent_gate_commands, engine_submission_steps]
+      direct_file_write: forbidden
+      novel_engine_tools: forbidden_and_not_required
+      command_tools: not_required
+      session_or_subagent_tools: forbidden_and_not_required
+      returns_only:
+        schemaVersion: novel-writer-return-v1
+        fields: [chapterNo, title, plan, body, audit]
+      performs_17_category_audit_on_final_body: true
+      may_spawn_children: false
+    parent_materialization:
+      source: exact_sessions_history_final_message
+      command: skills/novel-author/scripts/materialize_session_handoff.py writer
+      binds: [real_writer_session_id, canonical_body_sha256, chapter_no]
+      writes:
         - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/plan.json
         - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/chapter.md
         - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/writer-audit.json
-      returns_only: [writer_session_id, body_path, body_sha256, han_chars, audit_path]
-      performs_17_category_audit_on_final_body: true
-      may_spawn_children: false
+        - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/writer-materialize-receipt.json
     planning:
       alternatives: 2-3
       scene_count: adaptive_default_3_5
@@ -208,6 +228,8 @@ workflow:
       - sessions_yield_until_required_completion_events
       - reconcile_with_subagents_or_sessions_list
       - read_final_reviews_with_sessions_history
+      - save_each_exact_completion_as_reviewer-return-source.json
+      - skills/novel-author/scripts/materialize_session_handoff.py_reviewer
       - skills/novel-author/scripts/independent_audit_gate.py
       - use_independent_receipt_engine_reviews_verbatim
       - build_provisional_chapter_signature
@@ -220,6 +242,11 @@ workflow:
       critical_when: [explicit_user_request, volume_boundary, major_reversal, finale]
       main_chat_history_inheritance: forbidden
       full_prepare_packet: forbidden
+      direct_file_write: forbidden
+      novel_engine_tools: forbidden_and_not_required
+      command_tools: not_required
+      session_or_subagent_tools: forbidden_and_not_required
+      return_schema: novel-review-return-v1
     reviewer_checks:
       continuity-auditor: [facts, timeline, knowledgeBoundary, stateContinuity, causality, promiseContinuity, relationshipContinuity]
       reader-editor: [readability, pacing, repetition, genreExperience, hookQuality, characterAgency]
@@ -385,6 +412,16 @@ failure_policy:
   reviewer_schema_retry_limit: 1
   reviewer_schema_retry_action: rebuild_payload_from_original_session_results
   forbid_reviewer_respawn_for_schema_retry: true
+  stopped_or_failed_legacy_chapter_recovery:
+    authoritative_rule: engine_not_found_means_no_committed_chapter
+    historical_draft_role: candidate_only
+    never_resume_cancelled_task: true
+    action:
+      - mark_old_job_cancelled_or_abandoned
+      - recover_candidate_body_from_history_when_available
+      - create_new_writer_session_for_same_engine_nextChapter
+      - give_candidate_body_to_new_writer_for_adopt_or_revise
+      - bind_final_body_to_new_writer_session_and_new_receipts
   forbid_logic_audit_prepare_for_quality_schema_retry: true
   closure_schema_retry_limit: 1
   closure_schema_retry_action: read_status_then_rebuild_only_closure_payload

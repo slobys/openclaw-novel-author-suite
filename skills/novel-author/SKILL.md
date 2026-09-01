@@ -3,7 +3,7 @@ name: novel-engine-operations
 description: 操作 Novel Engine V5 服务端工具，负责项目状态、审计、提交、对账、Closure、修订和完整性检查；具体小说创作规则由 workspace 的 novel-author Skill 负责。
 ---
 
-# Novel Engine Operations — V5.4 Balanced-Lite
+# Novel Engine Operations — V5.4.1 Tool-Safe Isolation
 
 `novel-engine` 是作品业务事实、章节正文和提交状态的唯一权威来源。聊天记忆、workspace 缓存、任务文件和本地脚本只负责创作判断、编排或派生校验；冲突时以 `novel_*` 工具返回为准。
 
@@ -42,7 +42,7 @@ description: 操作 Novel Engine V5 服务端工具，负责项目状态、审�
 
 ### 2. Isolated plan and draft
 
-每章创建一个新的 isolated Writer session，主会话只负责编排。Writer 把 `plan.json`、`chapter.md` 和绑定最终正文 Hash 的17类 `writer-audit.json` 写入本章 evidence 目录，返回路径、Hash、汉字数和 Writer session ID；主会话不得自己写正文或再次做一次模型语义审计。
+每章创建一个新的 isolated Writer session，主会话只负责编排。Writer 只返回 `novel-writer-return-v1` JSON，不要求文件、命令、Novel Engine 或会话工具；主会话使用真实 completion 和 session ID 调用 Workspace 的 `materialize_session_handoff.py`，生成 `plan.json`、`chapter.md`、`writer-audit.json` 并计算 canonical Hash。主会话不得自己写正文或再次做一次模型语义审计。
 
 内部比较 2–3 个推进方案。优先选择同时满足以下条件的方案：
 
@@ -65,7 +65,7 @@ Writer 使用 prepare packet 中的审计契约对最终正文执行完整随稿
 
 ### 4. Independent quality
 
-Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会话 ID。两个 reviewer 分别使用 `role=continuity-auditor` 与 `role=reader-editor` 的 compact packet；普通章默认 low thinking。
+Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会话 ID。两个 reviewer 分别使用 `role=continuity-auditor` 与 `role=reader-editor` 的 compact packet，只返回 `novel-review-return-v1` JSON，由主会话确定性落盘并绑定正文 Hash；普通章默认 low thinking。
 
 - Continuity Auditor：只审事实、时间线、空间、动机、知识边界、世界规则、资源、因果、伏笔、公平性、关系连续性和对手压力；
 - Reader Editor：只审可读性、重复、节奏、情感、场景动态、人物声音、类型承诺、章节功能和钩子；
