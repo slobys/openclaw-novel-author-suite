@@ -667,6 +667,17 @@ assets/reference_registry.json（如有）
 4. 发现任何锁变化，返回 `LOCK_MUTATION_DETECTED`；
 5. 逻辑父实体不直接形成 n8n 图片任务；只打包展开后的子资产；
 6. 一个子资产对应一个 Prompt、一个文件名、一个 `assets[]` 对象；
+7. 必须保留 `scene_id/location_id/sub_location_id/location_asset_id` 等上游绑定字段，不得从 Prompt 文本重新推断；
+8. 完成 Job 后必须运行 `deepwhite-n8n-asset-dispatcher/scripts/validate-continuity-job.mjs`，由脚本重新计算四锁完整 SHA256；只比较字段字符串不算通过。
+
+PACKAGER_ONLY 还必须先运行逐字段交接校验，防止 Prompt 与 Hash 被一起改写后蒙混通过：
+
+```bash
+python3 scripts/validate_packager_handoff.py \
+  --expanded assets/expanded_asset_list.{base|shot}.json \
+  --job dispatch/asset_jobs/{base-assets|shot-assets}.json \
+  --out gates/packager_handoff_gate.{base|shot}.json
+```
 7. 每个对象原样保留 `depends_on`、`reference_inputs`、`generation_stage`、`anchor_roles`；
 8. 画幅优先读取子资产 `aspect_ratio`，不得统一覆盖为项目画幅；
 9. 输出目录：BASE_ASSET 使用 `prompts/base_assets/`，SHOT_ASSET_GAP 使用 `prompts/shot_assets/`；
