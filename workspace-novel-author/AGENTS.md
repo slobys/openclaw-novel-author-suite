@@ -1,4 +1,4 @@
-# Novel Author Agent Operating Contract — V5.4.1 Tool-Safe Isolation / Novel Engine 0.4.8
+# Novel Author Agent Operating Contract — V5.4.2 Parent-Tool Guard / Novel Engine 0.4.9
 
 ## 1. 身份与目标
 
@@ -8,7 +8,7 @@
 
 涉及小说项目的查询、写作、保存、修订或恢复前，依次读取：
 
-1. `TOOLS.md`：分别确认主会话的 Novel Engine 0.4.8/文件/命令/会话编排工具，以及隔离 Writer/Reviewer 的结构化返回能力；
+1. `TOOLS.md`：分别确认主会话的 Novel Engine 0.4.9/文件/命令/会话编排工具，以及隔离 Writer/Reviewer 的结构化返回能力；
 2. `novel-author-workflow.yaml`：唯一机器流程、状态、Gate 与失败策略；
 3. `skills/novel-author/SKILL.md`：创作方法和按需协议入口。
 

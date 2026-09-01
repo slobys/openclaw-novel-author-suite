@@ -1,5 +1,5 @@
 schema_version: '1.5'
-pipeline_profile: novel_author_tool_safe_isolation_v5.4.1_engine_0.4.8
+pipeline_profile: novel_author_parent_tool_guard_v5.4.2_engine_0.4.9
 source_of_truth: true
 agent_id: novel-author
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SUITE_VERSION="0.4.8"
+SUITE_VERSION="0.4.9"
 REPOSITORY="slobys/openclaw-novel-author-suite"
 REF="${NOVEL_SUITE_REF:-v${SUITE_VERSION}}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
@@ -130,6 +130,74 @@ fi
 
 openclaw agents set-identity --agent novel-author --from-identity >/dev/null 2>&1 || true
 
+configure_novel_author_tools() {
+  local config_json tool_plan mode profile values conflicts
+  if ! config_json="$(openclaw config get agents --json 2>/dev/null)"; then
+    log "Could not inspect per-agent tools; keeping inherited OpenClaw tool policy."
+    return 0
+  fi
+
+  tool_plan="$(
+    printf '%s' "${config_json}" | node -e '
+      let input = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { input += chunk; });
+      process.stdin.on("end", () => {
+        const parsed = JSON.parse(input);
+        const entry = parsed?.entries?.["novel-author"];
+        if (!entry) {
+          process.stdout.write("unsupported\t\t[]\t[]");
+          return;
+        }
+        const tools = entry.tools && typeof entry.tools === "object" ? entry.tools : {};
+        const allow = Array.isArray(tools.allow) ? tools.allow.filter((value) => typeof value === "string") : null;
+        const alsoAllow = Array.isArray(tools.alsoAllow) ? tools.alsoAllow.filter((value) => typeof value === "string") : [];
+        if (allow && alsoAllow.length) {
+          process.stdout.write("invalid\t\t[]\t[\"allow and alsoAllow are both configured\"]");
+          return;
+        }
+        const deny = Array.isArray(tools.deny) ? tools.deny.filter((value) => typeof value === "string") : [];
+        const requiredTargets = ["group:fs", "group:runtime", "read", "write", "edit", "apply_patch", "exec", "process"];
+        const matches = (pattern, value) => {
+          const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+          return new RegExp(`^${escaped}$`, "i").test(value);
+        };
+        const conflicts = deny.filter((pattern) => requiredTargets.some((target) => matches(pattern, target)));
+        const canonical = [
+          "group:fs", "group:runtime", "agents_list", "image_generate", "novel-engine",
+          "session_status", "sessions_history", "sessions_list", "sessions_send",
+          "sessions_spawn", "sessions_yield", "subagents"
+        ];
+        const unique = (values) => [...new Set(values)];
+        if (allow) {
+          process.stdout.write(["allow", "full", JSON.stringify(unique([...allow, ...canonical])), JSON.stringify(conflicts)].join("\t"));
+          return;
+        }
+        const inheritedProfile = tools.profile === "full" || tools.profile === "coding" ? tools.profile : "coding";
+        process.stdout.write(["alsoAllow", inheritedProfile, JSON.stringify(unique([...alsoAllow, ...canonical])), JSON.stringify(conflicts)].join("\t"));
+      });
+    '
+  )" || die "Cannot inspect the novel-author tool policy."
+
+  IFS=$'\t' read -r mode profile values conflicts <<<"${tool_plan}"
+  if [[ "${mode}" == "unsupported" ]]; then
+    log "This OpenClaw roster does not expose agents.entries; keeping inherited tool policy."
+    return 0
+  fi
+  if [[ "${mode}" == "invalid" ]]; then
+    die "novel-author tools configure both allow and alsoAllow. Remove one policy before reinstalling."
+  fi
+  if [[ "${conflicts}" != "[]" ]]; then
+    die "novel-author tools.deny blocks required workspace/runtime tools: ${conflicts}. Remove the conflicting deny rule explicitly, then reinstall."
+  fi
+
+  log "Ensuring novel-author parent workspace/runtime tools"
+  openclaw config set agents.entries.novel-author.tools.profile "\"${profile}\"" --strict-json
+  openclaw config set "agents.entries.novel-author.tools.${mode}" "${values}" --strict-json
+}
+
+configure_novel_author_tools
+
 log "Applying safe public defaults"
 openclaw config set plugins.entries.novel-engine.config.minChapterHanChars 2000 --strict-json
 openclaw config set plugins.entries.novel-engine.config.targetChapterHanChars 2600 --strict-json
@@ -156,6 +224,6 @@ if ! openclaw plugins inspect novel-engine --runtime --json >/dev/null 2>&1; the
   log "Runtime inspection is not ready yet. If restart was deferred, run: openclaw plugins inspect novel-engine --runtime --json"
 fi
 
-log "Installed Novel Engine ${SUITE_VERSION} and Novel Author V5.4.1 Tool-Safe Isolation"
+log "Installed Novel Engine ${SUITE_VERSION} and Novel Author V5.4.2 Parent-Tool Guard"
 log "Workspace backup: ${backup_dir}"
 log "Novel data was not modified. Open the novel-author agent to begin."
