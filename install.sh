@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 SUITE_VERSION="1.3.0"
 REPOSITORY="slobys/openclaw-novel-author-suite"
-REF="${DRAMA_SUITE_REF:-drama-v${SUITE_VERSION}}"
+REF="${DRAMA_SUITE_REF:-drama-pipeline}"
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
 SKILLS_DIR="${OPENCLAW_SKILLS_DIR:-${STATE_DIR}/skills}"
 NOVEL_WORKSPACE_OVERRIDE="${NOVEL_PRODUCER_WORKSPACE:-}"

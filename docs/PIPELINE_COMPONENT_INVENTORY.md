@@ -113,7 +113,7 @@ novel-author（原创小说，可选上游）
 | Python 3 | 状态机、Gate、队列和验证脚本 | 已验证 Python 3.11 |
 | Node.js | n8n sender、工作流契约测试 | 已验证 Node 24；建议声明 Node 20+ |
 | n8n | 图片/视频异步执行、结构化 QA 和回调 | 需支持 Code、HTTP Request、文件系统和并发 Worker |
-| FFmpeg/ffprobe | 最终合成与 MP4 可读性验证 | 安装器必须检测 |
+| FFmpeg/ffprobe | 最终合成与 MP4 可读性验证 | 可选；仅启用视频合成时检测或安装 |
 | jq | JSON 运维与诊断 | 建议 1.6+ |
 | Git/GitHub CLI | 源码安装、升级和维护发布 | 运行短剧本身不强制 `gh` |
 | 共享文件系统 | OpenClaw 与 n8n 交换图片、manifest、状态和视频 | 宿主机与容器路径必须显式映射 |
@@ -144,14 +144,23 @@ n8n 内部的图片模型、视频模型、数据库和对象存储凭据必须�
 
 安装器应把它们转换为 `OPENCLAW_HOME`、宿主机共享根和 n8n 容器共享根参数，并在安装后运行路径可读写和目录穿越检查。
 
-## 8. 一键安装前仍需补齐的公开发行组件
+## 8. 已随包同步的视频组件与暂缓项
 
-1. **视频 n8n 工作流模板**：本地可分发源目前只有视频 job schema、绑定 Gate 和 webhook sender，没有可供新用户直接导入的视频生成工作流 JSON。
-2. **统一最终合成入口**：流程要求 FFmpeg 最终 MP4、大小和 SHA256 验证，但当前工作区没有通用的 `compose_episode.py` 或等价脚本。
-3. **无环境依赖的配置渲染**：工作流与脚本仍有上述硬编码路径；安装器需要生成目标机配置，而不是修改 Git 中的源文件。
-4. **安装后 smoke test**：至少验证 Agent/Skill 可发现、两个 webhook dry-run、共享目录、Demand Gate、Scene/Video Binding Gate 和 ffprobe。
+以下现有组件随 Agent 和 Skills 一次性安装，不需要用户后续逐个复制：
 
-在这四项完成前，仓库可以作为“生产源代码与合同包”共享，但不应宣传为“任意机器一键安装后即可完整出片”。
+- `deepwhite-shot-transition-builder-zh` 全部 references 与 templates；
+- `deepwhite-n8n-video-dispatcher` 全部 scripts、references 与 templates；
+- `short-drama-video-pacing`；
+- `workspaces/drama-producer/scripts/submit_video_job.py`；
+- `drama-workflow.yaml` 中现有 Stage 50—90 视频流程合同。
+
+以下属于暂缓实现，不阻塞当前 Agent/Skill 套件拉取与安装：
+
+1. 可供新用户直接导入的视频 n8n 执行工作流 JSON；
+2. 通用 FFmpeg 最终合成入口；
+3. 视频供应商、n8n 与 FFmpeg 的自动安装和凭据配置。
+
+安装器应始终安装上述现有视频组件；只有用户真正启用视频生产时，才检测和安装对应外部工具。
 
 ## 9. 同步白名单与排除项
 

@@ -22,6 +22,22 @@
     "deepwhite-shot-transition-builder-zh",
     "deepwhite-n8n-video-dispatcher"
   ],
+  "workspace_skills": [
+    "deepwhite-asset-demand-resolver",
+    "episode-production-closure",
+    "external-job-dispatch-recovery",
+    "openclaw-missing-reply-diagnosis",
+    "pre-dispatch-production-session",
+    "short-drama-video-pacing",
+    "video-reference-asset-safety"
+  ],
+  "bundled_video_components": [
+    "skills/deepwhite-shot-transition-builder-zh",
+    "skills/deepwhite-n8n-video-dispatcher",
+    "workspaces/drama-producer/skills/short-drama-video-pacing/SKILL.md",
+    "workspaces/drama-producer/scripts/submit_video_job.py",
+    "workspaces/drama-producer/drama-workflow.yaml"
+  ],
   "required_commands": [
     "python3",
     "node",
@@ -48,10 +64,13 @@
     "workspaces/drama-producer/tests/test_asset_demand_workflow_contract.py"
   ],
   "release_blockers": [
-    "missing_distributable_n8n_video_workflow_template",
-    "missing_unified_ffmpeg_composition_entrypoint",
     "hardcoded_local_paths_need_installer_parameterization",
     "missing_post_install_end_to_end_smoke_test"
+  ],
+  "deferred_video_implementation": [
+    "distributable_n8n_video_execution_workflow",
+    "unified_ffmpeg_composition_entrypoint",
+    "automatic_video_provider_and_ffmpeg_setup"
   ],
   "excluded_patterns": [
     ".env",
