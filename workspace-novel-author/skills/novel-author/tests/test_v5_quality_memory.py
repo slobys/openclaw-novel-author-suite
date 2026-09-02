@@ -364,7 +364,7 @@ class QualityGateTests(unittest.TestCase):
 
 
 class ServerCapabilityTests(unittest.TestCase):
-    def test_server_gate_rejects_pre_045_engine(self):
+    def test_server_gate_rejects_pre_060_engine(self):
         with tempfile.TemporaryDirectory() as temp:
             cap=Path(temp)/"cap.json"
             cap.write_text(json.dumps({
@@ -383,28 +383,29 @@ class ServerCapabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); cap=root/"cap.json"
             cap.write_text(json.dumps({
-                "engineVersion":"0.4.10",
+                "engineVersion":"0.6.0",
                 "enforcedServerSide":True,"minChapterHanChars":2600,
                 "commitRehash":True,"auditHashBinding":True,"completeAuditCoverage":True,
                 "independentQualityReceipt":True,"requestIdIdempotency":True,
                 "closureReceiptRequired":True,"requestIdRequired":True,
                 "derivedBodyHashBinding":True,"requiredAuditCategoryCount":17,
                 "requestIdPayloadBinding":True,"crashRecoverableTransactions":True,
-                "commitStatusReconciliation":True,"revisionCas":True,"projectIntegrityCheck":True
+                "commitStatusReconciliation":True,"revisionCas":True,"projectIntegrityCheck":True,
+                "recoverableFinalize":True
             }),encoding="utf-8")
             result=run_script("server_capability_gate.py",cap,"--hard-min","2600")
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertTrue(json.loads(result.stdout)["serverGateVerified"])
 
-    def test_server_gate_accepts_novel_engine_045_project_status(self):
+    def test_server_gate_accepts_novel_engine_060_project_status(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); cap=root/"status.json"
             cap.write_text(json.dumps({
-                "engineVersion":"0.4.10",
+                "engineVersion":"0.6.0",
                 "storyLedgers":{"chapterLengthGate":{"minHanChars":3200,"enforcedServerSide":True},"closureReceiptRequired":True,"requiredAuditCategories":[f"c{i}" for i in range(17)]},
                 "serverCapabilities":{
                     "serverGateVerified":True,
-                    "engineVersion":"0.4.10",
+                    "engineVersion":"0.6.0",
                     "hanLengthRecount":True,
                     "auditBodyHashBinding":True,
                     "completeAuditCoverage":True,
@@ -419,6 +420,7 @@ class ServerCapabilityTests(unittest.TestCase):
                     "commitStatusReconciliation":True,
                     "revisionCas":True,
                     "projectIntegrityCheck":True,
+                    "recoverableFinalize":True,
                     "resolvedHardMinHanChars":3200
                 }
             }),encoding="utf-8")

@@ -47,11 +47,11 @@ export FAKE_AGENT_CONFIG_JSON='{"entries":{"novel-author":{"tools":{}}}}'
 bash "${REPO_ROOT}/install.sh"
 
 test -f "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
-grep -q 'V5.4.3' "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
+grep -q 'V6.1 Balanced-Fast' "${OPENCLAW_STATE_DIR}/workspace-novel-author/AGENTS.md"
 test -f "${OPENCLAW_STATE_DIR}/workspace-novel-author/skills/novel-author/scripts/materialize_session_handoff.py"
 test "$(cat "${OPENCLAW_STATE_DIR}/workspace-novel-author/memory/private.md")" = 'private memory'
 find "${OPENCLAW_STATE_DIR}/backups/novel-author-suite" -name AGENTS.md -type f | grep -q .
-grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.10 --force --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
+grep -q 'plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.6.0 --force --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
 grep -q 'plugins enable novel-engine --accept-capabilities' "${FAKE_OPENCLAW_LOG}"
 grep -q 'config set agents.entries.novel-author.tools.profile "coding" --strict-json' "${FAKE_OPENCLAW_LOG}"
 grep -q 'config set agents.entries.novel-author.tools.alsoAllow .*group:fs.*group:runtime.*read.*write.*edit.*apply_patch.*exec.*process.*novel-engine.*sessions_spawn.*--strict-json' "${FAKE_OPENCLAW_LOG}"
@@ -67,10 +67,13 @@ export FAKE_AGENT_CONFIG_JSON='{"entries":{"novel-author":{"tools":{"profile":"f
 bash "${REPO_ROOT}/install.sh"
 
 test "$(grep -c 'agents add novel-author' "${FAKE_OPENCLAW_LOG}")" -eq 1
-grep -q '^plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.10 --force$' "${FAKE_OPENCLAW_LOG}"
+grep -q '^plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.6.0 --force$' "${FAKE_OPENCLAW_LOG}"
 grep -q '^plugins enable novel-engine$' "${FAKE_OPENCLAW_LOG}"
 grep -q 'config set agents.entries.novel-author.tools.profile "full" --strict-json' "${FAKE_OPENCLAW_LOG}"
-grep -q 'config set agents.entries.novel-author.tools.allow .*group:fs.*group:runtime.*read.*write.*edit.*apply_patch.*exec.*process.*novel-engine.*sessions_spawn.*--strict-json' "${FAKE_OPENCLAW_LOG}"
+allow_line="$(grep 'config set agents.entries.novel-author.tools.allow ' "${FAKE_OPENCLAW_LOG}" | tail -n 1)"
+for required_tool in novel-engine sessions_spawn group:fs group:runtime read write edit apply_patch exec process; do
+  grep -Fq "\"${required_tool}\"" <<<"${allow_line}"
+done
 
 export FAKE_AGENT_CONFIG_JSON='{"entries":{"novel-author":{"tools":{"profile":"full","allow":["novel-engine"],"deny":["group:runtime"]}}}}'
 if bash "${REPO_ROOT}/install.sh" >"${TEST_ROOT}/deny.log" 2>&1; then

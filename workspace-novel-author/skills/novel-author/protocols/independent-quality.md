@@ -1,4 +1,4 @@
-# Independent Quality Gate Protocol V5.4.3 Codex Tool Projection
+# Independent Quality Gate Protocol V6.1 Balanced-Fast
 
 目标：用两个真实隔离审稿上下文降低作者自证偏差，同时限制重复审稿、无效重试和 Token 消耗。
 
@@ -31,15 +31,12 @@
 
 ## Reviewer checks 的精确结构
 
-`checks` 的每个值只能是“状态”，不能是审稿说明。标准写法为对象：
+`checks` 的每个值只能是“状态”，不能是审稿说明。Balanced-Fast 标准写法为精确字符串：
 
 ```json
 {
   "checks": {
-    "facts": {
-      "status": "pass",
-      "evidence": "人物、器具与既有事实一致"
-    }
+    "facts": "pass"
   }
 }
 ```
@@ -51,15 +48,15 @@
 - `"facts": "pass: consistent"`；
 - 缺少角色所需的任一检查项。
 
-说明文字放在对象的 `evidence`；非阻断建议放在 `issues`。不得把状态与说明拼接成一个字符串。
+兼容 `{ "status":"pass", "evidence":"..." }` 对象，但普通通过项不得生成 evidence；说明与非阻断建议只放在真实 `issues`。不得把状态与说明拼接成一个字符串。
 
 ## 会话生命周期与复用
 
-普通章节默认 `context=isolated`、`thinking=medium`。用户明确要求、卷末、重大转折或终局等关键章才使用 `high`。
+普通章节默认 `context=isolated`、`thinking=low`，两个 reviewer 同阶段并行启动。用户明确要求、卷末、重大转折或终局等关键章才使用 `high`。
 
 首次审核：
 
-1. 分别调用 `sessions_spawn`；
+1. 在同一阶段并行调用两次 `sessions_spawn`；
 2. 保存每次返回的 `runId` 与 `childSessionKey`；
 3. 两次均为 `accepted` 后调用 `sessions_yield`，等待推送事件；
 4. 恢复后用 `subagents`/`sessions_list` 对账，用 `sessions_history` 读取最终结论；
@@ -103,6 +100,6 @@ python3 {baseDir}/scripts/independent_audit_gate.py \
   --receipt independent-receipt.json
 ```
 
-本地 Gate 与 Novel Engine 0.4.10 使用相同的 canonical reviewer roles、7/6 项检查范围、非阻断状态和正文 Hash 绑定规则。
+本地 Gate 与 Novel Engine 0.6.0 使用相同的 canonical reviewer roles、7/6 项检查范围、非阻断状态和正文 Hash 绑定规则。
 
 Gate 成功后会在 `independent-receipt.json.engineReviews` 中生成标准化的 `continuityReview` 与 `readerReview`。调用 `novel_chapter_quality_record` 时必须原样使用这两个对象；Gate 之后禁止再次改写、补写或拼接 `checks`。若原始值是 `pass：说明` 或只有说明，本地 Gate 会在调用 Engine 前直接拒绝。

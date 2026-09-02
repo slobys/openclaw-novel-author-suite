@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { LOGIC_AUDIT_CATEGORIES, NovelEngine } from "./engine.js";
+import { finalizeChapterRecoverable } from "./finalize.js";
 import { ChapterSignatureInput, ClosureOperationInput, GenreGateInput } from "./tool-schemas.js";
 
 export { ChapterSignatureInput, ClosureOperationInput, GenreGateInput } from "./tool-schemas.js";
@@ -154,6 +155,26 @@ const QualityConfig = Type.Object({
   requireClosureReceipt: Type.Optional(Type.Boolean())
 }, { additionalProperties: false });
 
+const FinalizeAudit = Type.Object({
+  decision: Type.Union([Type.Literal("pass"), Type.Literal("revise"), Type.Literal("block")]),
+  checks: Type.Unknown(),
+  issues: Type.Optional(Type.Array(AuditIssue, { maxItems: 100 })),
+  summary: Type.Optional(Type.String({ maxLength: 5000 }))
+}, { additionalProperties: false });
+
+const FinalizeLedgerEntry = Type.Object({
+  ledgerType: LedgerType,
+  entry: Type.Unknown()
+}, { additionalProperties: false });
+
+const FinalizeDynamicState = Type.Object({
+  sourceRef: Type.Optional(Type.String({ maxLength: 1000 })),
+  characters: Type.Optional(Type.Array(Type.Unknown(), { maxItems: 500 })),
+  knowledge: Type.Optional(Type.Array(Type.Unknown(), { maxItems: 500 })),
+  inventory: Type.Optional(Type.Array(Type.Unknown(), { maxItems: 500 })),
+  locations: Type.Optional(Type.Array(Type.Unknown(), { maxItems: 500 }))
+}, { additionalProperties: false });
+
 function toolResult(value) {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: value };
 }
@@ -208,7 +229,7 @@ export default definePluginEntry({
     add({ name: "novel_chapter_audit_record", label: "Record Chapter Audit", description: "Server-recount, hash-bind and persist a complete 17-category chapter audit.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, stage: Type.Optional(Type.Union([Type.Literal("precommit"), Type.Literal("postcommit")])), decision: Type.Union([Type.Literal("pass"), Type.Literal("revise"), Type.Literal("block")]), content: Type.Optional(Type.String({ minLength: 1 })), checks: Type.Optional(Type.Unknown()), issues: Type.Optional(Type.Array(AuditIssue, { maxItems: 100 })), summary: Type.Optional(Type.String({ maxLength: 5000 })) }), run: (params) => engine.recordChapterAudit(params) });
     add({ name: "novel_chapter_quality_record", label: "Record Independent Chapter Quality", description: "Hash-bind independent Continuity Auditor and Reader Editor receipts plus genre/signature gates.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, content: Type.String({ minLength: 1 }), writerSessionId: Type.String({ minLength: 1, maxLength: 500 }), continuityReview: IndependentReview, readerReview: IndependentReview, genreGate: GenreGateInput, signature: ChapterSignatureInput, summary: Type.Optional(Type.String({ maxLength: 10000 })) }), run: (params) => engine.recordChapterQuality(params) });
 
-    add({ name: "novel_prepare_chapter", label: "Prepare Next Chapter", description: "Build a role-scoped compact chapter packet by default; use profile=full only for critical chapters or diagnosis.", parameters: Type.Object({ projectId: ProjectId, profile: Type.Optional(Type.Union([Type.Literal("compact"), Type.Literal("full")])), role: Type.Optional(Type.Union([Type.Literal("writer"), Type.Literal("continuity-auditor"), Type.Literal("reader-editor")])) }), run: ({ projectId, profile, role }) => engine.prepareChapter(projectId, { profile, role }) });
+    add({ name: "novel_prepare_chapter", label: "Prepare Next Chapter", description: "Build one cached, hard-capped balanced-fast role packet by default; use profile=compact/full only for critical chapters or diagnosis.", parameters: Type.Object({ projectId: ProjectId, profile: Type.Optional(Type.Union([Type.Literal("balanced-fast"), Type.Literal("compact"), Type.Literal("full")])), role: Type.Optional(Type.Union([Type.Literal("writer"), Type.Literal("continuity-auditor"), Type.Literal("reader-editor")])) }), run: ({ projectId, profile, role }) => engine.prepareChapter(projectId, { profile, role }) });
     add({ name: "novel_commit_chapter", label: "Commit Novel Chapter", description: "Crash-recoverably commit exactly the expected next chapter after project length, full audit, body-hash and independent quality gates pass.", parameters: Type.Object({ projectId: ProjectId, expectedChapter: Chapter, title: Type.String({ minLength: 1, maxLength: 200 }), content: Type.String({ minLength: 1 }), summary: Type.String({ minLength: 1, maxLength: 10000 }), continuityDelta: Type.Optional(Type.Unknown()), requestId: Type.String({ minLength: 1, maxLength: 500 }) }), run: (params) => engine.commitChapter(params) });
     add({ name: "novel_commit_status", label: "Reconcile Chapter Commit", description: "Resolve an uncertain commit result by requestId or chapter after recovering any prepared transaction.", parameters: Type.Object({ projectId: ProjectId, chapter: Type.Optional(Chapter), requestId: Type.Optional(Type.String({ maxLength: 500 })) }), run: (params) => engine.commitStatus(params) });
     add({ name: "novel_read_chapter", label: "Read Novel Chapter", description: "Read a committed chapter with parsed body, hash, revision, summary, delta and closure.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter }), run: (params) => engine.readChapter(params) });
@@ -217,5 +238,34 @@ export default definePluginEntry({
     add({ name: "novel_chapter_closure_record", label: "Record Chapter Closure", description: "Hash-bind closure status and durable evidence for causal, foreshadowing, Promise, relationship, opposition, signature, state and memory updates.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter, bodySha256: Sha256, operations: Type.Object({ causalEvents: Type.Optional(ClosureOperationInput), foreshadowing: Type.Optional(ClosureOperationInput), promisePayoff: Type.Optional(ClosureOperationInput), relationshipGraph: Type.Optional(ClosureOperationInput), oppositionClocks: Type.Optional(ClosureOperationInput), chapterSignature: Type.Optional(ClosureOperationInput), dynamicState: Type.Optional(ClosureOperationInput), memoryIndex: Type.Optional(ClosureOperationInput) }, { additionalProperties: false }), note: Type.Optional(Type.String({ maxLength: 10000 })) }), run: (params) => engine.recordChapterClosure(params) });
     add({ name: "novel_chapter_closure_status", label: "Read Chapter Closure", description: "Read chapter closure completeness and verify its current body-hash binding.", parameters: Type.Object({ projectId: ProjectId, chapter: Chapter }), run: (params) => engine.chapterClosureStatus(params) });
     add({ name: "novel_project_integrity_check", label: "Check Novel Project Integrity", description: "Recover pending transactions, validate all chapter/receipt/hash/state/memory bindings and optionally perform safe metadata repairs.", parameters: Type.Object({ projectId: ProjectId, repair: Type.Optional(Type.Boolean()) }), run: (params) => engine.projectIntegrityCheck(params) });
+    add({
+      name: "novel_finalize_chapter",
+      label: "Finalize Novel Chapter",
+      description: "One recoverable, idempotent entry for Audit, independent Quality, Commit, ledgers, Closure and Integrity. Reuses the same requestId after interruption without weakening existing server gates.",
+      parameters: Type.Object({
+        projectId: ProjectId,
+        expectedChapter: Chapter,
+        title: Type.String({ minLength: 1, maxLength: 200 }),
+        content: Type.String({ minLength: 1 }),
+        summary: Type.String({ minLength: 1, maxLength: 10000 }),
+        continuityDelta: Type.Optional(Type.Unknown()),
+        requestId: Type.String({ minLength: 1, maxLength: 500 }),
+        writerSessionId: Type.String({ minLength: 1, maxLength: 500 }),
+        audit: FinalizeAudit,
+        continuityReview: IndependentReview,
+        readerReview: IndependentReview,
+        genreGate: GenreGateInput,
+        signature: ChapterSignatureInput,
+        productionProfile: Type.Optional(Type.Union([Type.Literal("balanced-fast"), Type.Literal("strict")])),
+        qualitySummary: Type.Optional(Type.String({ maxLength: 10000 })),
+        causalEvents: Type.Optional(Type.Array(CausalEvent, { maxItems: 100 })),
+        foreshadowingEntries: Type.Optional(Type.Array(ForeshadowingEntry, { maxItems: 100 })),
+        storyLedgerEntries: Type.Optional(Type.Array(FinalizeLedgerEntry, { maxItems: 200 })),
+        dynamicState: Type.Optional(FinalizeDynamicState),
+        memoryRecords: Type.Optional(Type.Array(Type.Unknown(), { maxItems: 50 })),
+        closureNote: Type.Optional(Type.String({ maxLength: 10000 }))
+      }, { additionalProperties: false }),
+      run: (params) => finalizeChapterRecoverable(engine, params)
+    });
   }
 });

@@ -109,6 +109,32 @@ test("project locks wait for short contention instead of failing immediately", a
   await owner;
 });
 
+test("balanced-fast prepare reuses one snapshot and enforces role packet caps", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  await fs.writeFile(path.join(projectDir, "outlines", "chapter-0001.md"), `第一章大纲\n${"推进情节。".repeat(1200)}`, "utf8");
+  await fs.writeFile(path.join(projectDir, "blueprint", "story-engine.md"), "故事发动机。".repeat(1200), "utf8");
+  await fs.writeFile(path.join(projectDir, "blueprint", "world-rules.md"), "世界规则。".repeat(1200), "utf8");
+  await fs.writeFile(path.join(projectDir, "blueprint", "characters.md"), "人物设定。".repeat(1200), "utf8");
+  await fs.writeFile(path.join(projectDir, "blueprint", "writing-rules.md"), "写作规则。".repeat(1200), "utf8");
+
+  const writer = await engine.prepareChapter("book01", { role: "writer" });
+  const continuity = await engine.prepareChapter("book01", { profile: "balanced-fast", role: "continuity-auditor" });
+  const reader = await engine.prepareChapter("book01", { profile: "balanced-fast", role: "reader-editor" });
+  assert.equal(writer.profile, "balanced-fast");
+  assert.ok(writer.packetChars <= 16000);
+  assert.ok(continuity.packetChars <= 8000);
+  assert.ok(reader.packetChars <= 6000);
+  assert.equal(writer.contextSnapshot.reused, false);
+  assert.equal(continuity.contextSnapshot.reused, true);
+  assert.equal(reader.contextSnapshot.reused, true);
+  assert.equal(writer.contextSnapshot.key, continuity.contextSnapshot.key);
+  assert.match(writer.packet, /通过项只写 pass/);
+
+  engine.prepareSnapshotCache.get(writer.contextSnapshot.key).createdAt = Date.now() - 120001;
+  const expired = await engine.prepareChapter("book01", { profile: "balanced-fast", role: "reader-editor" });
+  assert.equal(expired.contextSnapshot.reused, false);
+});
+
 test("project locks still fail after the bounded wait expires", async (t) => {
   const { engine, projectDir } = await fixture(t, { lockAcquireTimeoutMs: 100 });
   let releaseOwner;
@@ -379,20 +405,20 @@ test("integrity repair safely creates missing chapter metadata", async (t) => {
   assert.equal(repaired.integrityPass, true);
 });
 
-test("prepare chapter defaults to a compact role-scoped packet and keeps full profile for diagnosis", async (t) => {
+test("prepare chapter defaults to balanced-fast and keeps full profile for diagnosis", async (t) => {
   const { engine } = await fixture(t);
   await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "主角在井边听见铁链声。" });
-  const compact = await engine.prepareChapter("book01");
-  assert.equal(compact.ready, true);
-  assert.equal(compact.chapter, 1);
-  assert.equal(compact.profile, "compact");
-  assert.equal(compact.role, "writer");
-  assert.equal(compact.context, undefined);
-  assert.ok(compact.packet.includes("Writer 精简资料包"));
-  assert.ok(compact.packet.includes("Writer 随稿审计契约"));
+  const fast = await engine.prepareChapter("book01");
+  assert.equal(fast.ready, true);
+  assert.equal(fast.chapter, 1);
+  assert.equal(fast.profile, "balanced-fast");
+  assert.equal(fast.role, "writer");
+  assert.equal(fast.context, undefined);
+  assert.ok(fast.packet.includes("Writer Balanced-Fast 资料包"));
+  assert.ok(fast.packet.includes("17 类审计契约"));
 
   const continuity = await engine.prepareChapter("book01", { role: "continuity-auditor" });
-  assert.ok(continuity.packet.includes("Continuity Auditor 精简资料包"));
+  assert.ok(continuity.packet.includes("Continuity Auditor Balanced-Fast 资料包"));
   assert.ok(!continuity.packet.includes("最近章节节奏指纹"));
 
   const full = await engine.prepareChapter("book01", { profile: "full" });
@@ -401,7 +427,7 @@ test("prepare chapter defaults to a compact role-scoped packet and keeps full pr
   assert.ok(full.context.dynamicState);
   assert.ok(full.context.memory);
   assert.ok(full.packet.includes("三级历史记忆候选"));
-  assert.ok(compact.packet.length < full.packet.length);
+  assert.ok(fast.packet.length < full.packet.length);
 });
 
 test("reference import is constrained to configured roots", async (t) => {

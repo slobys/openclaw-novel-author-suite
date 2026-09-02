@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [
-  "package.json", "package-lock.json", "openclaw.plugin.json", "README.md", "UPGRADE-0.4.10.md", "AUDIT-REPORT.md",
-  "src/index.js", "src/engine.js", "src/utils.js", "dist/index.js", "dist/engine.js", "dist/utils.js",
-  "skills/novel-author/SKILL.md", "test/engine.test.js"
+  "package.json", "package-lock.json", "openclaw.plugin.json", "README.md", "UPGRADE-0.4.10.md", "UPGRADE-0.5.0.md", "UPGRADE-0.6.0.md", "AUDIT-REPORT.md",
+  "src/index.js", "src/engine.js", "src/finalize.js", "src/tool-schemas.js", "src/utils.js",
+  "dist/index.js", "dist/engine.js", "dist/finalize.js", "dist/tool-schemas.js", "dist/utils.js",
+  "skills/novel-author/SKILL.md", "test/engine.test.js", "test/finalize.test.js", "test/tool-schema.test.js"
 ];
 const failures = [];
 for (const relativePath of required) {
@@ -24,12 +25,12 @@ const manifest = JSON.parse(await fs.readFile(path.join(root, "openclaw.plugin.j
 if (manifest.id !== "novel-engine") failures.push(`Manifest id must be novel-engine, got ${manifest.id}`);
 if (manifest.version !== pkg.version) failures.push(`Manifest/package version mismatch: ${manifest.version} != ${pkg.version}`);
 if (pkg.main !== "./dist/index.js") failures.push("package.json main must be ./dist/index.js");
-for (const relativePath of ["src/index.js", "src/engine.js", "src/utils.js", "dist/index.js", "dist/engine.js", "dist/utils.js"]) {
+for (const relativePath of ["src/index.js", "src/engine.js", "src/finalize.js", "src/tool-schemas.js", "src/utils.js", "dist/index.js", "dist/engine.js", "dist/finalize.js", "dist/tool-schemas.js", "dist/utils.js"]) {
   try { execFileSync(process.execPath, ["--check", path.join(root, relativePath)], { stdio: "pipe" }); }
   catch (error) { failures.push(`Syntax check failed: ${relativePath}\n${error.stderr?.toString() ?? error.message}`); }
 }
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-for (const name of ["index.js", "engine.js", "utils.js"]) {
+for (const name of ["index.js", "engine.js", "finalize.js", "tool-schemas.js", "utils.js"]) {
   const src = await fs.readFile(path.join(root, "src", name));
   const dist = await fs.readFile(path.join(root, "dist", name));
   if (hash(src) !== hash(dist)) failures.push(`dist/${name} is not synchronized with src/${name}; run npm run build.`);

@@ -1,6 +1,6 @@
-# Novel Engine 0.4.10 — Codex Tool Projection Edition
+# Novel Engine 0.6.0 — Balanced-Fast Edition
 
-面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.4.10 保留项目写锁有限等待、租约心跳和陈旧锁安全回收，并与 Novel Author V5.4.3 Codex Tool Projection Workspace 一起提供公开部署。`novel_prepare_chapter` 默认返回角色化 compact packet，减少长篇主会话重复上下文；项目数据格式不变。隔离 Writer/Reviewer 只返回结构化结果，父会话负责落盘与 Hash 绑定，安装器同时配置工具组和 Codex Harness 所需的具体工具 ID。
+面向 OpenClaw 长篇小说 Agent 的持久化工具插件。0.6.0 保留项目写锁、租约恢复、Hash/CAS、Quality、Closure 和完整性门禁，并与 Novel Author V6.1 Balanced-Fast Workspace 一起部署。`novel_prepare_chapter` 默认建立一次章节快照，再生成角色化限长资料包；两个 Reviewer 可在正文 Hash 固定后并行运行。项目数据格式仍为 schema 2。
 
 ## 核心能力
 
@@ -15,9 +15,12 @@
 - **长期台账**：Causal Event、Foreshadowing、Promise、Relationship、Opposition Clock、Chapter Signature、Arc Audit、Outline Drift；
 - **Closure**：记录每章提交后各类台账是否真正更新，并附持久化证据；
 - **Integrity Check**：检查章节、摘要、Delta、Meta、Audit、Quality、Closure、Receipt、状态、记忆和台账 Hash；
+- **Balanced-Fast**：Writer/Continuity/Reader 资料包分别限制为 16000/8000/6000 字符，同章复用一次两分钟快照；
+- **分级 Integrity**：普通章核对当前章，第1章、每5章、严格模式和故障诊断核对全项目；
+- **Recoverable Finalize**：一次调用完成 Quality、Commit、派生台账、Closure 与适用范围的 Integrity；
 - **旧项目懒迁移**：历史章节不会因为新门禁被追溯性判死，新门禁从升级时的 `nextChapter` 起生效。
 
-## 33 个工具
+## 34 个工具
 
 ### 项目与配置
 
@@ -63,6 +66,7 @@
 - `novel_chapter_closure_record`
 - `novel_chapter_closure_status`
 - `novel_project_integrity_check`
+- `novel_finalize_chapter`
 
 ## 推荐生产链路
 
@@ -77,17 +81,15 @@ project_status + project_config_read
               ↓
 Continuity Auditor + Reader Editor
               ↓
-   chapter_quality_record
+   本地确定性 Gate
               ↓
- commit_chapter(requestId)
+novel_finalize_chapter(requestId)
               ↓
-不确定结果 → commit_status
+Quality + Commit + ledgers/state/memory
               ↓
-ledgers + dynamic state + memory
+Closure + scoped/full Integrity
               ↓
-       closure_record
-              ↓
-      integrity_check
+不确定结果 → commit_status 后同 requestId 恢复
 ```
 
 ## 持久化目录
@@ -139,7 +141,7 @@ npm run pack:check
 openclaw plugins inspect novel-engine --runtime --json
 ```
 
-确认 33 个工具成功注册后重启 Gateway。
+确认 34 个工具成功注册后重启 Gateway。
 
 ## 已知边界
 

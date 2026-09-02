@@ -1,4 +1,4 @@
-# novel-author 运行工具契约 — V5.4.3 Codex Tool Projection / Novel Engine 0.4.10
+# novel-author 运行工具契约 — V6.1 Balanced-Fast / Novel Engine 0.6.0
 
 本文件用于启动时确认能力，不替代 `novel-author-workflow.yaml` 的阶段裁决。只承认当前 OpenClaw runtime 真实注册的工具。
 
@@ -56,16 +56,19 @@
 - `novel_chapter_closure_record`
 - `novel_chapter_closure_status`
 - `novel_project_integrity_check`
+- `novel_finalize_chapter`（首选：一次执行 Quality → Commit → 派生记录 → Closure → Integrity；中断后以相同 requestId 恢复）
 
 `novel_prepare_chapter` 默认使用：
 
 ```json
-{ "projectId": "<projectId>", "profile": "compact", "role": "writer" }
+{ "projectId": "<projectId>", "profile": "balanced-fast", "role": "writer" }
 ```
 
-独立审稿前分别请求 `role=continuity-auditor` 和 `role=reader-editor`。只有关键章或诊断才用 `profile=full`；禁止把 full `packet` 与 full `context` 同时塞给普通 Writer。
+独立审稿前分别请求 `role=continuity-auditor` 和 `role=reader-editor`，三次响应的 `contextSnapshot.key` 必须相同，后两次应为 `reused=true`。普通章 packet 上限为 Writer 16000、Continuity 8000、Reader 6000 字符；关键章使用 `profile=compact`，只有诊断才用 `profile=full`。禁止把 full `packet` 与 full `context` 同时塞给普通 Writer。
 
-正式写章只在主会话检查项目/配置、prepare、audit record、quality record、commit、commit status、read、closure status、integrity、文件写入和命令执行能力。缺失 `novel_chapter_quality_record`、`novel_commit_status` 或 `novel_project_integrity_check` 时，只能产出草稿，不能宣称 V5 服务端闭环完成。不得把这组能力要求套到隔离 Writer 或 Reviewer。
+正式写章只在主会话检查项目/配置、prepare、audit record、`novel_finalize_chapter`、commit status、read、closure status、integrity、文件写入和命令执行能力。缺失 `novel_finalize_chapter` 时可以使用完整旧链路回退；若新旧两条链路所需工具均不完整，只能产出草稿，不能宣称服务端闭环完成。不得把这组能力要求套到隔离 Writer 或 Reviewer。
+
+普通章调用 Finalize 时传 `"productionProfile":"balanced-fast"`：第 1 章和每第 5 章仍自动做全项目 Integrity，其余普通章只核对当前章节及本章派生绑定。卷末、重大转折、终局、异常恢复或用户要求严格检查时传 `"productionProfile":"strict"`。Finalize 已返回通过结果后禁止额外重复调用 Integrity。
 
 ## 隔离写作与审稿能力
 
@@ -74,10 +77,10 @@
 推荐的真实生命周期：
 
 1. 每章先用 `sessions_spawn(context=isolated, thinking=medium, runTimeoutSeconds=900)` 创建一个全新 Writer。主会话不得自己写正文；
-2. Writer 只接收 compact writer packet，最终只返回一个 `novel-writer-return-v1` JSON；叶子会话不需要也不得要求文件、命令、`novel_*`、`sessions_spawn/send/history` 或本地 Gate 工具；
+2. Writer 只接收 role packet，最终只返回一个 `novel-writer-return-v1` JSON；17 个通过检查的值直接写 `"pass"`，只有异常项进入 `issues`，不得输出 17 段通过理由；叶子会话不需要也不得要求文件、命令、`novel_*`、`sessions_spawn/send/history` 或本地 Gate 工具；
 3. spawn 后立即用 `job_state.py register-task` 保存 `runId`、`childSessionKey`，从 `subagents(action=list)` 获得 `taskId` 后补记；
 4. 主会话用 `sessions_history` 取得真实最终回复，原样保存后执行 `materialize_session_handoff.py writer`，再运行 `writer_handoff_gate.py` 和 `chapter_length.py`。不足硬下限时只用 `sessions_send` 把准确差额发回同一个 Writer 一次，不创建新 Writer；
-5. 正文定稿后，再用各自 compact packet 创建 Continuity Auditor 与 Reader Editor；它们只返回 `novel-review-return-v1` JSON，主会话用 `materialize_session_handoff.py reviewer` 生成审稿文件；普通章 `thinking=low`，关键章才 `high`；
+5. 正文定稿后，在同一阶段并行创建 Continuity Auditor 与 Reader Editor；它们使用同一 context snapshot 派生的各自 packet，只返回 `novel-review-return-v1` JSON，主会话用 `materialize_session_handoff.py reviewer` 生成审稿文件；通过项只写 `"pass"`，证据只写入问题项；普通章 `thinking=low`，关键章才 `high`；
 6. 所需创建请求都得到 `status=accepted` 后调用 `sessions_yield` 等待推送，不轮询；恢复后先运行 job Guard，再用 `sessions_history` 读取最终回执；
 7. 正文修订时优先用 `sessions_send` 让原三个子会话处理新 Hash；只有原会话不可访问、失败、超时或角色错误时才创建替代会话；
 8. 任何创建、等待、回收或替换动作都必须记录真实标识；没有真实 ID 和成功结果时不得声称写作或审稿完成。
@@ -95,7 +98,17 @@ Writer 必须只返回以下 JSON，不要 Markdown 说明；`bodySha256` 与 se
   "title": "纯标题",
   "plan": { "alternativesConsidered": 2, "selected": "本章方案" },
   "body": "正文全文",
-  "audit": { "decision": "pass", "checks": {}, "issues": [] }
+  "audit": {
+    "decision": "pass",
+    "checks": {
+      "facts": "pass", "timeline": "pass", "space": "pass", "motivation": "pass",
+      "knowledge": "pass", "worldRules": "pass", "resources": "pass", "causality": "pass",
+      "foreshadowing": "pass", "originality": "pass", "voice": "pass", "sceneDynamics": "pass",
+      "promiseFairness": "pass", "relationshipContinuity": "pass", "emotionCurve": "pass",
+      "fatigueRisk": "pass", "oppositionPressure": "pass"
+    },
+    "issues": []
+  }
 }
 ```
 
@@ -107,7 +120,11 @@ Reviewer 必须只返回：
   "chapterNo": 17,
   "reviewerRole": "continuity-auditor",
   "conclusion": "pass",
-  "checks": {},
+  "checks": {
+    "facts": "pass", "timeline": "pass", "knowledgeBoundary": "pass",
+    "stateContinuity": "pass", "causality": "pass",
+    "promiseContinuity": "pass", "relationshipContinuity": "pass"
+  },
   "issues": [],
   "summary": ""
 }

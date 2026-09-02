@@ -1,9 +1,9 @@
 ---
 name: novel-engine-operations
-description: 操作 Novel Engine V5 服务端工具，负责项目状态、审计、提交、对账、Closure、修订和完整性检查；具体小说创作规则由 workspace 的 novel-author Skill 负责。
+description: 操作 Novel Engine 0.6.0 服务端工具，负责 Balanced-Fast 资料包、项目状态、审计、质量、可恢复收尾、对账、Closure、修订和完整性检查；具体小说创作规则由 workspace 的 novel-author Skill 负责。
 ---
 
-# Novel Engine Operations — V5.4.3 Codex Tool Projection
+# Novel Engine Operations — 0.6.0 Balanced-Fast
 
 `novel-engine` 是作品业务事实、章节正文和提交状态的唯一权威来源。聊天记忆、workspace 缓存、任务文件和本地脚本只负责创作判断、编排或派生校验；冲突时以 `novel_*` 工具返回为准。
 
@@ -14,7 +14,7 @@ description: 操作 Novel Engine V5 服务端工具，负责项目状态、审�
 3. 调用 `novel_project_config_read` 获取项目实际 `writingContract`、`quality`、`enforcement` 与 `genreProfile`；
 4. 不把全局默认值当成项目值，不凭聊天记录猜测章节号。
 
-旧项目首次由 0.4.0 读取时会建立迁移边界。迁移边界之前的历史章节可被 grandfathered，但从边界章节开始必须执行 V5 门禁。
+旧项目首次读取时会建立迁移边界。迁移边界之前的历史章节可被 grandfathered，但从边界章节开始必须执行当前门禁。
 
 ## 新项目
 
@@ -28,7 +28,7 @@ description: 操作 Novel Engine V5 服务端工具，负责项目状态、审�
 
 ### 1. Prepare
 
-普通章节调用 `novel_prepare_chapter(profile=compact, role=writer)`；只有关键章或诊断才使用 `profile=full`。精简资料包包含：
+调用 `novel_prepare_chapter`。资料包包含：
 
 - 本章章纲与原创设定；
 - 最近章节摘要、连续性变化和上一章末尾；
@@ -40,9 +40,7 @@ description: 操作 Novel Engine V5 服务端工具，负责项目状态、审�
 
 若返回 `ready:false`，先补齐指定 artifact。若上一章 Closure 未完成且项目要求 Closure，不得绕过。
 
-### 2. Isolated plan and draft
-
-每章创建一个新的 isolated Writer session，主会话只负责编排。Writer 只返回 `novel-writer-return-v1` JSON，不要求文件、命令、Novel Engine 或会话工具；主会话使用真实 completion 和 session ID 调用 Workspace 的 `materialize_session_handoff.py`，生成 `plan.json`、`chapter.md`、`writer-audit.json` 并计算 canonical Hash。主会话不得自己写正文或再次做一次模型语义审计。
+### 2. Plan and draft
 
 内部比较 2–3 个推进方案。优先选择同时满足以下条件的方案：
 
@@ -57,7 +55,7 @@ Scene 和 Beat 数量服从项目实际 writing contract。标题参数只传纯
 
 ### 3. Logic audit
 
-Writer 使用 prepare packet 中的审计契约对最终正文执行完整随稿审计。主会话用 `writer_handoff_gate.py` 验证后调用 `novel_chapter_audit_record`，不得为了记录回执再通读正文。至少覆盖：
+调用 `novel_logic_audit_prepare`，再用最终正文执行完整审计。至少覆盖：
 
 `facts`、`timeline`、`space`、`motivation`、`knowledge`、`worldRules`、`resources`、`causality`、`foreshadowing`、`originality`、`voice`、`sceneDynamics`、`promiseFairness`、`relationshipContinuity`、`emotionCurve`、`fatigueRisk`、`oppositionPressure`。
 
@@ -65,7 +63,7 @@ Writer 使用 prepare packet 中的审计契约对最终正文执行完整随稿
 
 ### 4. Independent quality
 
-Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会话 ID。两个 reviewer 分别使用 `role=continuity-auditor` 与 `role=reader-editor` 的 compact packet，只返回 `novel-review-return-v1` JSON，由主会话确定性落盘并绑定正文 Hash；普通章默认 low thinking。
+Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会话 ID。
 
 - Continuity Auditor：只审事实、时间线、空间、动机、知识边界、世界规则、资源、因果、伏笔、公平性、关系连续性和对手压力；
 - Reader Editor：只审可读性、重复、节奏、情感、场景动态、人物声音、类型承诺、章节功能和钩子；
@@ -75,11 +73,15 @@ Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会
 
 服务端能验证正文 Hash、审稿角色、三会话 ID 不同、结论和阻断问题；它不能仅凭 ID 证明三个会话在物理上确实隔离，因此编排 Agent 必须真实创建独立上下文。
 
-### Stop and cancel
+### 5. V6 默认收尾
 
-每次 spawn 后登记 taskId/runId/sessionKey。用户要求停止时先把本地 Job 写成 `cancelling`，再用 `subagents(action=cancel, taskId=...)` 取消本会话树内活动任务，最后确认 `cancelled`。每个阶段和迟到 completion 前必须检查 Guard；`cancelling/cancelled` 不得恢复、重试或创建后台任务。主聊天中的 `/stop` 用于立即级联急停，持久化取消用于阻止重连后复活。
+本地 Precommit 通过后，默认调用一次 `novel_finalize_chapter`，同时提交最终正文、Writer Audit、两份独立 Review、Genre Gate、Chapter Signature、摘要、连续性变化，以及适用的台账、状态和记忆更新。
 
-### 5. Commit
+该工具仍逐项执行原有 Audit、Quality、Commit、Closure 和 Integrity 硬门禁。它是“可恢复且幂等”的编排入口，不是跨文件数据库原子事务。调用中断后必须使用完全相同的 `requestId` 和正文恢复；已提交章节只继续补齐派生记录和 Closure，不重复写正文或重做语义审稿。
+
+只有运行时确实没有 `novel_finalize_chapter` 时，才使用下面的兼容链路。
+
+### 6. 兼容 Commit
 
 使用稳定且唯一的 `requestId` 调用 `novel_commit_chapter`。服务端重新执行：
 
@@ -94,7 +96,7 @@ Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会
 
 若网络断开、投递不确定或 UI 提示无法确认，先调用 `novel_commit_status`，按同一个 `requestId` 或章节号对账。只有明确 `not_found` 才可重新提交；不得盲目重复 commit。
 
-### 6. Closure
+### 7. 兼容 Closure
 
 Commit 成功后，按正文真实变化更新：
 
@@ -106,7 +108,7 @@ Commit 成功后，按正文真实变化更新：
 
 这些更新必须绑定本章当前 `contentSha256`。然后调用 `novel_chapter_closure_record`，为适用操作提交 durable evidence；最后用 `novel_chapter_closure_status` 确认 complete。不要在台账实际未更新时把操作标为 completed。
 
-### 7. Integrity
+### 8. Integrity
 
 多章任务每章结束后进行轻量状态核对；每 5 章、卷边界、修订后或异常恢复后调用 `novel_project_integrity_check`。`repair:true` 只用于安全修复元数据和状态进度，不会替你自动重写正文、审稿结论或过期记忆。
 

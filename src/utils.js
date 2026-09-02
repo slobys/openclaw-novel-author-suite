@@ -8,7 +8,6 @@ export const SAFE_KEY_PATTERN = /^[a-z0-9][a-z0-9_.:-]{0,127}$/i;
 export function nowIso() {
   return new Date().toISOString();
 }
-
 export function padChapter(value) {
   return String(value).padStart(4, "0");
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate observed Novel Engine server-side capabilities.
 
-Accepts both the flat capability receipt and the Novel Engine 0.4.10
+Accepts both the flat capability receipt and the Novel Engine 0.6.0
 `novel_project_status` result.
 """
 
@@ -33,7 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description="Validate observed novel-engine server-side gate capabilities")
     parser.add_argument("capability_json")
     parser.add_argument("--hard-min", type=int, default=2000)
-    parser.add_argument("--min-engine-version", default="0.4.10")
+    parser.add_argument("--min-engine-version", default="0.6.0")
     parser.add_argument("--receipt")
     args = parser.parse_args()
 
@@ -77,6 +77,7 @@ def main():
         "commitStatusReconciliation": as_bool(first(caps.get("commitStatusReconciliation"), data.get("commitStatusReconciliation"))),
         "revisionCas": as_bool(first(caps.get("revisionCas"), data.get("revisionCas"))),
         "projectIntegrityCheck": as_bool(first(caps.get("projectIntegrityCheck"), data.get("projectIntegrityCheck"))),
+        "recoverableFinalize": as_bool(first(caps.get("recoverableFinalize"), data.get("recoverableFinalize"))),
     }
 
     reasons = []
@@ -101,6 +102,7 @@ def main():
         "commitStatusReconciliation",
         "revisionCas",
         "projectIntegrityCheck",
+        "recoverableFinalize",
     ]
     for key in required:
         if normalized[key] is not True:

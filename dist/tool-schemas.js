@@ -18,7 +18,6 @@ export const ClosureOperationInput = Type.Object({
   additionalProperties: false,
   description: "Closure operation receipt. completed requires evidence; skipped requires reason."
 });
-
 export const GenreGateInput = Type.Object({
   bodySha256: Sha256,
   pass: Type.Boolean({ description: "Explicit authoritative genre-gate result." }),

@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPOSITORY="slobys/openclaw-novel-author-suite"
-NOVEL_REF="${NOVEL_AUTHOR_INSTALL_REF:-v0.4.10}"
+NOVEL_REF="${NOVEL_AUTHOR_INSTALL_REF:-v0.6.0}"
 DRAMA_REF="${DRAMA_PIPELINE_INSTALL_REF:-drama-v1.3.0}"
 choice="${1:-}"
 

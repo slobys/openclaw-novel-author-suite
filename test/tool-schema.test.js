@@ -8,7 +8,6 @@ test("closure tool schema exposes one object branch instead of a string union", 
   assert.deepEqual(ClosureOperationInput.required, ["status"]);
   assert.deepEqual(ClosureOperationInput.properties.status.anyOf.map((entry) => entry.const), ["pending", "completed", "skipped", "failed"]);
 });
-
 test("quality tool schemas expose required canonical hash bindings", () => {
   assert.equal(GenreGateInput.type, "object");
   assert.deepEqual(GenreGateInput.required, ["bodySha256", "pass"]);

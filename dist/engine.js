@@ -31,11 +31,61 @@ import {
   writeJson
 } from "./utils.js";
 
-export const ENGINE_VERSION = "0.4.10";
+export const ENGINE_VERSION = "0.6.0";
 export const ENGINE_SCHEMA_VERSION = 2;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const BALANCED_FAST_PACKET_LIMITS = Object.freeze({
+  writer: 16000,
+  "continuity-auditor": 8000,
+  "reader-editor": 6000
+});
+const PREPARE_SNAPSHOT_TTL_MS = 120000;
+
+function tailClip(value, maxChars) {
+  const text = String(value ?? "");
+  if (text.length <= maxChars) return text;
+  return `[仅保留末尾 ${maxChars} 字符]\n${text.slice(-maxChars)}`;
+}
+
+function promptClip(value, maxChars) {
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 32))}\n…[资料已按快档上限截断]`;
+}
+
+function compactDynamicState(value, perCollection = 8) {
+  const source = value && typeof value === "object" ? value : {};
+  const select = (collection) => Object.fromEntries(
+    Object.entries(collection ?? {})
+      .sort(([, left], [, right]) => Number(right?.chapter ?? 0) - Number(left?.chapter ?? 0))
+      .slice(0, perCollection)
+  );
+  return {
+    projectId: source.projectId,
+    revision: source.revision ?? 0,
+    characters: select(source.characters),
+    knowledge: select(source.knowledge),
+    inventory: select(source.inventory),
+    locations: select(source.locations),
+    updatedAt: source.updatedAt ?? null,
+    selection: "most-recent-per-collection"
+  };
+}
+
+function compactForeshadowing(value, limit = 10) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    projectId: source.projectId,
+    chapter: source.chapter,
+    revision: source.revision ?? 0,
+    due: (source.due ?? []).slice(0, limit),
+    overdue: (source.overdue ?? []).slice(0, limit),
+    upcoming: (source.upcoming ?? []).slice(0, limit)
+  };
 }
 
 const IDEA_SCORE_WEIGHTS = {
@@ -628,6 +678,7 @@ export class NovelEngine {
       transactionRetention: config.transactionRetention ?? 200,
       __testFailAfterTargetWrites: config.__testFailAfterTargetWrites ?? null
     };
+    this.prepareSnapshotCache = new Map();
     if (this.config.targetChapterHanChars < this.config.minChapterHanChars) {
       throw codedError("INVALID_ENGINE_CONFIG", "targetChapterHanChars must be greater than or equal to minChapterHanChars.");
     }
@@ -1200,6 +1251,7 @@ export class NovelEngine {
           threeTierMemory: true,
           storyLedgers: true,
           projectIntegrityCheck: true,
+          recoverableFinalize: true,
           resolvedHardMinHanChars: projectConfig.writingContract.minHanChars
         },
         runtimeHealth: {
@@ -1833,38 +1885,47 @@ export class NovelEngine {
     return { projectId: normalizeProjectId(projectId), query: queryText, revision: memory.revision ?? 0, candidateCount: candidates.length, results: scored.slice(0, limit) };
   }
 
-  async prepareLogicAudit({ projectId, chapter }) {
+  async prepareLogicAudit({ projectId, chapter, profile = "full" }) {
+    if (!new Set(["balanced-fast", "compact", "full"]).has(profile)) {
+      throw codedError("INVALID_PREPARE_PROFILE", "profile must be balanced-fast, compact or full.", { profile });
+    }
     const projectDir = await this.requireProject(projectId);
     const { state, projectConfig, recoveredTransactions } = await this.recoverProjectForRead(projectDir);
     const current = chapter === undefined || chapter === null ? state.nextChapter : parseChapter(chapter);
+    const fast = profile === "balanced-fast";
+    const recentWindow = fast ? 2 : 5;
     const readOptional = async (relativePath, maxChars) => {
       const filePath = resolveInside(projectDir, relativePath);
       return (await exists(filePath)) ? clip(await fs.readFile(filePath, "utf8"), maxChars) : "";
     };
     const graph = await readJsonOr(resolveInside(projectDir, "story/causal-events.json"), { events: [] });
-    const relevantEvents = (graph.events ?? []).filter((item) => item.status === "planned" || (item.chapter !== null && item.chapter >= Math.max(1, current - 5) && item.chapter <= current + 2)).slice(-150);
+    const relevantEvents = (graph.events ?? [])
+      .filter((item) => item.status === "planned" || (item.chapter !== null && item.chapter >= Math.max(1, current - recentWindow) && item.chapter <= current + 2))
+      .slice(-(fast ? 20 : 150));
     const recentContinuity = [];
-    for (let number = Math.max(1, current - 5); number < current; number += 1) {
+    for (let number = Math.max(1, current - recentWindow); number < current; number += 1) {
       const deltaPath = resolveInside(projectDir, `continuity/deltas/chapter-${padChapter(number)}.json`);
       if (await exists(deltaPath)) recentContinuity.push(await readJson(deltaPath));
     }
-    const promises = await this.storyLedgerQuery({ projectId, ledgerType: "promise", chapter: current, horizon: 5, limit: 100 });
-    const opposition = await this.storyLedgerQuery({ projectId, ledgerType: "oppositionClock", chapter: current, horizon: 5, limit: 100 });
-    const relationships = await this.storyLedgerQuery({ projectId, ledgerType: "relationship", limit: 200 });
+    const promises = await this.storyLedgerQuery({ projectId, ledgerType: "promise", chapter: current, horizon: 5, limit: fast ? 12 : 100 });
+    const opposition = await this.storyLedgerQuery({ projectId, ledgerType: "oppositionClock", chapter: current, horizon: 5, limit: fast ? 12 : 100 });
+    const relationships = await this.storyLedgerQuery({ projectId, ledgerType: "relationship", limit: fast ? 20 : 200 });
     const dynamicState = await this.dynamicStateContext({ projectId });
+    const foreshadowing = await this.foreshadowingDue({ projectId, chapter: current, horizon: 3 });
     return {
       projectId: normalizeProjectId(projectId),
       chapter: current,
       recoveredTransactions,
-      worldRules: await readOptional("blueprint/world-rules.md", 10000),
-      storyEngine: await readOptional("blueprint/story-engine.md", 6000),
+      profile,
+      worldRules: await readOptional("blueprint/world-rules.md", fast ? 3000 : 10000),
+      storyEngine: await readOptional("blueprint/story-engine.md", fast ? 2500 : 6000),
       causalEvents: relevantEvents,
       recentContinuity,
-      foreshadowing: await this.foreshadowingDue({ projectId, chapter: current, horizon: 3 }),
+      foreshadowing: fast ? compactForeshadowing(foreshadowing) : foreshadowing,
       promises,
       oppositionClocks: opposition,
       relationships,
-      dynamicState,
+      dynamicState: fast ? compactDynamicState(dynamicState) : dynamicState,
       auditContract: {
         categories: projectConfig.quality.requiredAuditCategories,
         requiredCategories: projectConfig.quality.requiredAuditCategories,
@@ -2002,9 +2063,9 @@ export class NovelEngine {
     });
   }
 
-  async prepareChapter(projectId, { profile = "compact", role = "writer" } = {}) {
-    if (!new Set(["compact", "full"]).has(profile)) {
-      throw codedError("INVALID_PREPARE_PROFILE", "profile must be compact or full.", { profile });
+  async prepareChapter(projectId, { profile = "balanced-fast", role = "writer" } = {}) {
+    if (!new Set(["balanced-fast", "compact", "full"]).has(profile)) {
+      throw codedError("INVALID_PREPARE_PROFILE", "profile must be balanced-fast, compact or full.", { profile });
     }
     if (!new Set(["writer", "continuity-auditor", "reader-editor"]).has(role)) {
       throw codedError("INVALID_PREPARE_ROLE", "role must be writer, continuity-auditor or reader-editor.", { role });
@@ -2015,58 +2076,84 @@ export class NovelEngine {
     await this.assertPreviousClosureComplete(projectDir, chapter, projectConfig);
     const outlinePath = resolveInside(projectDir, `outlines/chapter-${padChapter(chapter)}.md`);
     if (!(await exists(outlinePath))) return { ready: false, reason: "missing_chapter_outline", chapter, requiredArtifact: { artifactType: "chapter-outline", key: String(chapter) } };
+    const fast = profile === "balanced-fast";
+    const outlineText = await fs.readFile(outlinePath, "utf8");
+    const outlineStat = await fs.stat(outlinePath);
     const readOptional = async (relativePath, maxChars) => {
       const filePath = resolveInside(projectDir, relativePath);
       return (await exists(filePath)) ? clip(await fs.readFile(filePath, "utf8"), maxChars) : "";
     };
-    const recent = [];
-    for (let number = Math.max(1, chapter - 5); number < chapter; number += 1) {
-      const summaryPath = resolveInside(projectDir, `summaries/chapter-${padChapter(number)}.json`);
-      const deltaPath = resolveInside(projectDir, `continuity/deltas/chapter-${padChapter(number)}.json`);
-      recent.push({ chapter: number, summary: (await exists(summaryPath)) ? await readJson(summaryPath) : null, continuityDelta: (await exists(deltaPath)) ? await readJson(deltaPath) : null });
+    const snapshotKey = `${normalizeProjectId(projectId)}:${chapter}:${state.revision ?? 0}:${projectConfig.revision ?? 0}:${outlineStat.size}:${outlineStat.mtimeMs}`;
+    let snapshotReused = false;
+    const cachedSnapshot = fast ? this.prepareSnapshotCache.get(snapshotKey) : null;
+    const cacheFresh = cachedSnapshot && Date.now() - cachedSnapshot.createdAt <= PREPARE_SNAPSHOT_TTL_MS;
+    if (cachedSnapshot && !cacheFresh) this.prepareSnapshotCache.delete(snapshotKey);
+    let context = cacheFresh ? cachedSnapshot.context : null;
+    if (context) snapshotReused = true;
+    if (!context) {
+      const recent = [];
+      const recentWindow = fast ? 2 : 5;
+      for (let number = Math.max(1, chapter - recentWindow); number < chapter; number += 1) {
+        const summaryPath = resolveInside(projectDir, `summaries/chapter-${padChapter(number)}.json`);
+        const deltaPath = resolveInside(projectDir, `continuity/deltas/chapter-${padChapter(number)}.json`);
+        recent.push({ chapter: number, summary: (await exists(summaryPath)) ? await readJson(summaryPath) : null, continuityDelta: (await exists(deltaPath)) ? await readJson(deltaPath) : null });
+      }
+      let previousChapter = "";
+      if (chapter > 1) {
+        const previousPath = resolveInside(projectDir, `chapters/chapter-${padChapter(chapter - 1)}.md`);
+        if (await exists(previousPath)) {
+          const previousText = await fs.readFile(previousPath, "utf8");
+          previousChapter = fast ? tailClip(previousText, 2000) : clip(previousText, 7000);
+        }
+      }
+      const ideaBank = fast ? { candidates: [], selectedId: null } : await readJsonOr(resolveInside(projectDir, "creative/idea-bank.json"), { candidates: [], selectedId: null });
+      const selectedIdea = (ideaBank.candidates ?? []).find((item) => item.id === ideaBank.selectedId) ?? null;
+      const logicAudit = await this.prepareLogicAudit({ projectId, chapter, profile });
+      const signatureLimit = fast ? 3 : 10;
+      const signatures = chapter > 1
+        ? await this.storyLedgerQuery({ projectId, ledgerType: "chapterSignature", chapter: chapter - 1, limit: signatureLimit })
+        : await this.storyLedgerQuery({ projectId, ledgerType: "chapterSignature", limit: signatureLimit });
+      const shortMemory = await this.memorySearch({ projectId, query: `${project.title} 第${chapter}章 ${outlineText}`, tiers: ["short"], chapterBefore: chapter, topK: fast ? 3 : 5 }).catch(() => ({ results: [] }));
+      const midMemory = await this.memorySearch({ projectId, query: `${project.title} ${project.genre} 主线 人物 关系 当前阶段`, tiers: ["mid"], chapterBefore: chapter, topK: fast ? 4 : 12 }).catch(() => ({ results: [] }));
+      const longMemory = await this.memorySearch({ projectId, query: outlineText, tiers: ["long"], chapterBefore: chapter, topK: fast ? 2 : 8 }).catch(() => ({ results: [] }));
+      context = {
+        project: { id: project.id, title: project.title, genre: project.genre, premise: project.premise },
+        projectConfig,
+        recoveredTransactions,
+        chapter,
+        chapterOutline: fast ? clip(outlineText, 2500) : outlineText,
+        structureFingerprint: fast ? "" : await readOptional("analysis/structure-fingerprint.md", 7000),
+        creativeBrief: await readOptional("blueprint/creative-brief.md", fast ? 1800 : 5000),
+        selectedIdea,
+        storyEngine: await readOptional("blueprint/story-engine.md", fast ? 2500 : 7000),
+        noveltyReport: fast ? "" : await readOptional("blueprint/novelty-report.md", 5000),
+        premise: fast ? "" : await readOptional("blueprint/premise.md", 5000),
+        world: fast ? "" : await readOptional("blueprint/world.md", 9000),
+        worldRules: await readOptional("blueprint/world-rules.md", fast ? 2500 : 9000),
+        characters: await readOptional("blueprint/characters.md", fast ? 3000 : 9000),
+        masterOutline: fast ? "" : await readOptional("blueprint/master-outline.md", 9000),
+        writingRules: await readOptional("blueprint/writing-rules.md", fast ? 1800 : 6000),
+        previousChapter,
+        recent,
+        causalEvents: logicAudit.causalEvents,
+        foreshadowing: logicAudit.foreshadowing,
+        promises: logicAudit.promises,
+        relationships: logicAudit.relationships,
+        oppositionClocks: logicAudit.oppositionClocks,
+        dynamicState: logicAudit.dynamicState,
+        memory: { short: shortMemory.results, mid: midMemory.results, long: longMemory.results },
+        recentSignatures: signatures.entries,
+        auditContract: logicAudit.auditContract,
+        auditRequired: projectConfig.quality.requireChapterAudit,
+        qualityGateRequired: projectConfig.quality.requireQualityGate
+      };
+      if (fast) {
+        this.prepareSnapshotCache.set(snapshotKey, { context, createdAt: Date.now() });
+        while (this.prepareSnapshotCache.size > 20) this.prepareSnapshotCache.delete(this.prepareSnapshotCache.keys().next().value);
+      }
     }
-    const previousChapter = chapter > 1 ? await readOptional(`chapters/chapter-${padChapter(chapter - 1)}.md`, 7000) : "";
-    const ideaBank = await readJsonOr(resolveInside(projectDir, "creative/idea-bank.json"), { candidates: [], selectedId: null });
-    const selectedIdea = (ideaBank.candidates ?? []).find((item) => item.id === ideaBank.selectedId) ?? null;
-    const logicAudit = await this.prepareLogicAudit({ projectId, chapter });
-    const signatures = chapter > 1
-      ? await this.storyLedgerQuery({ projectId, ledgerType: "chapterSignature", chapter: chapter - 1, limit: 10 })
-      : await this.storyLedgerQuery({ projectId, ledgerType: "chapterSignature", limit: 10 });
-    const dynamicState = await this.dynamicStateContext({ projectId });
-    const shortMemory = await this.memorySearch({ projectId, query: `${project.title} 第${chapter}章 ${await fs.readFile(outlinePath, "utf8")}`, tiers: ["short"], chapterBefore: chapter, topK: 5 }).catch(() => ({ results: [] }));
-    const midMemory = await this.memorySearch({ projectId, query: `${project.title} ${project.genre} 主线 人物 关系 当前阶段`, tiers: ["mid"], chapterBefore: chapter, topK: 12 }).catch(() => ({ results: [] }));
-    const longMemory = await this.memorySearch({ projectId, query: `${await fs.readFile(outlinePath, "utf8")}`, tiers: ["long"], chapterBefore: chapter, topK: 8 }).catch(() => ({ results: [] }));
-    const context = {
-      project: { id: project.id, title: project.title, genre: project.genre, premise: project.premise },
-      projectConfig,
-      recoveredTransactions,
-      chapter,
-      chapterOutline: await fs.readFile(outlinePath, "utf8"),
-      structureFingerprint: await readOptional("analysis/structure-fingerprint.md", 7000),
-      creativeBrief: await readOptional("blueprint/creative-brief.md", 5000),
-      selectedIdea,
-      storyEngine: await readOptional("blueprint/story-engine.md", 7000),
-      noveltyReport: await readOptional("blueprint/novelty-report.md", 5000),
-      premise: await readOptional("blueprint/premise.md", 5000),
-      world: await readOptional("blueprint/world.md", 9000),
-      worldRules: await readOptional("blueprint/world-rules.md", 9000),
-      characters: await readOptional("blueprint/characters.md", 9000),
-      masterOutline: await readOptional("blueprint/master-outline.md", 9000),
-      writingRules: await readOptional("blueprint/writing-rules.md", 6000),
-      previousChapter,
-      recent,
-      causalEvents: logicAudit.causalEvents,
-      foreshadowing: logicAudit.foreshadowing,
-      promises: logicAudit.promises,
-      relationships: logicAudit.relationships,
-      oppositionClocks: logicAudit.oppositionClocks,
-      dynamicState,
-      memory: { short: shortMemory.results, mid: midMemory.results, long: longMemory.results },
-      recentSignatures: signatures.entries,
-      auditContract: logicAudit.auditContract,
-      auditRequired: projectConfig.quality.requireChapterAudit,
-      qualityGateRequired: projectConfig.quality.requireQualityGate
-    };
+    const dynamicState = context.dynamicState;
+    const recent = context.recent;
     const compactSections = {
       writer: [
         `# 《${project.title}》第${chapter}章 Writer 精简资料包`,
@@ -2094,6 +2181,35 @@ export class NovelEngine {
         "\n## 最近章节节奏指纹\n", JSON.stringify(context.recentSignatures, null, 2)
       ]
     };
+    if (fast) {
+      const fastSections = {
+        writer: [
+          `# 《${project.title}》第${chapter}章 Writer Balanced-Fast 资料包`,
+          "\n## 本章规格\n", promptClip({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, 1400),
+          "\n## 本章大纲\n", promptClip(context.chapterOutline, 2500),
+          "\n## 17 类审计契约（通过项只写 pass，只有问题项写证据）\n", promptClip(context.auditContract, 1400),
+          "\n## 创作发动机与写作规则\n", promptClip(`${context.storyEngine}\n${context.writingRules}`, 3000),
+          "\n## 世界硬规则与人物\n", promptClip(`${context.worldRules}\n${context.characters}`, 3500),
+          "\n## 上一章末尾\n", promptClip(context.previousChapter, 2000),
+          "\n## 最近状态、记忆与本章长线任务\n", promptClip({ recent, dynamicState, memory: context.memory, causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, 2600)
+        ],
+        "continuity-auditor": [
+          `# 《${project.title}》第${chapter}章 Continuity Auditor Balanced-Fast 资料包`,
+          "\n## 本章大纲与上一章末尾\n", promptClip(`${context.chapterOutline}\n${context.previousChapter}`, 3000),
+          "\n## 世界规则与当前状态\n", promptClip({ worldRules: context.worldRules, dynamicState }, 2200),
+          "\n## 最近变化与相关长线任务\n", promptClip({ recent, causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, 2200)
+        ],
+        "reader-editor": [
+          `# 《${project.title}》第${chapter}章 Reader Editor Balanced-Fast 资料包`,
+          "\n## 类型体验与篇幅规格\n", promptClip({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, 1400),
+          "\n## 本章大纲\n", promptClip(context.chapterOutline, 2000),
+          "\n## 创作核心与写作规则\n", promptClip(`${context.creativeBrief}\n${context.storyEngine}\n${context.writingRules}`, 1800),
+          "\n## 最近节奏指纹\n", promptClip(context.recentSignatures, 700)
+        ]
+      };
+      const packet = promptClip(fastSections[role].join("\n"), BALANCED_FAST_PACKET_LIMITS[role]);
+      return { ready: true, chapter, profile, role, packet, packetChars: packet.length, packetSha256: sha256(packet), contextSnapshot: { key: snapshotKey, reused: snapshotReused } };
+    }
     if (profile === "compact") {
       return { ready: true, chapter, profile, role, packet: compactSections[role].join("\n") };
     }
@@ -2719,6 +2835,109 @@ export class NovelEngine {
       if (requestRelativePath) writes.push(await this.buildTransactionWrite(projectDir, requestRelativePath, `${JSON.stringify({ schemaVersion: ENGINE_SCHEMA_VERSION, requestId: requestString, requestFingerprint: fingerprint, result, recordedAt: timestamp }, null, 2)}\n`, null));
       const manifest = await this.prepareTransaction(projectDir, { transactionId, kind: "chapter-revision", projectId: normalizeProjectId(projectId), chapter: number, requestId: requestString || null, payloadFingerprint: fingerprint, writes, result });
       return this.applyTransactionUnlocked(projectDir, manifest);
+    });
+  }
+
+  async chapterIntegrityCheck({ projectId, chapter }) {
+    const projectDir = await this.requireProject(projectId);
+    return this.withProjectLock(projectDir, async () => {
+      await this.ensureProjectDirectories(projectDir);
+      await this.initializeOptionalLedgers(projectDir);
+      const recoveredTransactions = await this.recoverPendingTransactionsUnlocked(projectDir);
+      const errors = [];
+      const warnings = [];
+      const number = parseChapter(chapter);
+      const projectConfig = await this.readProjectConfig(projectDir);
+      const statePath = resolveInside(projectDir, "state.json");
+      const state = await readJson(statePath);
+      if (state.integrityStatus === "error") errors.push({ code: "PREVIOUS_PROJECT_INTEGRITY_ERROR", message: "Resolve the prior full-project integrity error before using fast chapter integrity." });
+
+      let parsed = null;
+      try {
+        parsed = await this.getCommittedChapterBody(projectDir, number);
+      } catch (error) {
+        errors.push({ code: error.code ?? "CHAPTER_PARSE_FAILED", chapter: number, message: error.message });
+      }
+
+      if (parsed) {
+        const relativeBase = `chapter-${padChapter(number)}`;
+        const summary = await readJsonOr(resolveInside(projectDir, `summaries/${relativeBase}.json`), null);
+        const delta = await readJsonOr(resolveInside(projectDir, `continuity/deltas/${relativeBase}.json`), null);
+        const meta = await readJsonOr(resolveInside(projectDir, `chapters/meta/${relativeBase}.json`), null);
+        const closure = await readJsonOr(resolveInside(projectDir, `story/closures/${relativeBase}.json`), null);
+        const receipt = await readJsonOr(resolveInside(projectDir, `receipts/commits/${relativeBase}.json`), null);
+        const metadataEnforced = number >= projectConfig.enforcement.metadataFromChapter;
+        if (!summary) (metadataEnforced ? errors : warnings).push({ code: "SUMMARY_MISSING", chapter: number });
+        else if (summary.bodySha256 && summary.bodySha256 !== parsed.bodySha256) errors.push({ code: "SUMMARY_BODY_HASH_MISMATCH", chapter: number, expected: parsed.bodySha256, actual: summary.bodySha256 });
+        if (!delta) (metadataEnforced ? errors : warnings).push({ code: "CONTINUITY_DELTA_MISSING", chapter: number });
+        else if (delta.bodySha256 && delta.bodySha256 !== parsed.bodySha256) errors.push({ code: "CONTINUITY_BODY_HASH_MISMATCH", chapter: number, expected: parsed.bodySha256, actual: delta.bodySha256 });
+        if (!meta) (metadataEnforced ? errors : warnings).push({ code: "CHAPTER_META_MISSING", chapter: number });
+        if (meta?.bodySha256 !== undefined && meta.bodySha256 !== parsed.bodySha256) errors.push({ code: "META_BODY_HASH_MISMATCH", chapter: number, expected: parsed.bodySha256, actual: meta.bodySha256 });
+        if (meta?.hanChars !== undefined && Number(meta.hanChars) !== parsed.hanChars) errors.push({ code: "META_HAN_COUNT_MISMATCH", chapter: number, expected: parsed.hanChars, actual: meta.hanChars });
+        const currentRevision = Number(meta?.revision ?? 1);
+        const closureEnforced = projectConfig.quality.requireClosureReceipt && (number >= projectConfig.enforcement.closureFromChapter || currentRevision > 1);
+        if (!closure) (closureEnforced ? errors : warnings).push({ code: "CLOSURE_MISSING", chapter: number });
+        else {
+          if (closure.bodySha256 !== parsed.bodySha256) errors.push({ code: "CLOSURE_BODY_HASH_MISMATCH", chapter: number, expected: parsed.bodySha256, actual: closure.bodySha256 });
+          if (closureEnforced && closure.status !== "complete") errors.push({ code: "CLOSURE_INCOMPLETE", chapter: number, status: closure.status });
+          else if (closure.status !== "complete") warnings.push({ code: "CLOSURE_INCOMPLETE", chapter: number, status: closure.status });
+        }
+        if (!receipt) warnings.push({ code: "COMMIT_RECEIPT_MISSING", chapter: number });
+        else if (receipt.contentSha256 && receipt.contentSha256 !== parsed.bodySha256) errors.push({ code: "COMMIT_RECEIPT_HASH_MISMATCH", chapter: number, expected: parsed.bodySha256, actual: receipt.contentSha256 });
+        if (projectConfig.writingContract.minHanChars > 0 && parsed.hanChars < projectConfig.writingContract.minHanChars) errors.push({ code: "CHAPTER_BELOW_CURRENT_MINIMUM", chapter: number, hanChars: parsed.hanChars, minimumHanChars: projectConfig.writingContract.minHanChars });
+        if (projectConfig.quality.requireChapterAudit && (number >= projectConfig.enforcement.auditFromChapter || currentRevision > 1)) {
+          const audit = await readJsonOr(resolveInside(projectDir, `story/audits/${relativeBase}-precommit.json`), null);
+          if (!audit) errors.push({ code: "AUDIT_MISSING", chapter: number });
+          else if (audit.contentSha256 !== parsed.bodySha256 || audit.decision !== "pass") errors.push({ code: "AUDIT_BINDING_INVALID", chapter: number, decision: audit.decision, bodySha256: audit.contentSha256 });
+        }
+        if (projectConfig.quality.requireQualityGate && (number >= projectConfig.enforcement.qualityFromChapter || currentRevision > 1)) {
+          const quality = await readJsonOr(resolveInside(projectDir, `story/quality/${relativeBase}.json`), null);
+          if (!quality) errors.push({ code: "QUALITY_RECEIPT_MISSING", chapter: number });
+          else if (quality.bodySha256 !== parsed.bodySha256 || quality.qualityPass !== true) errors.push({ code: "QUALITY_BINDING_INVALID", chapter: number, qualityPass: quality.qualityPass, bodySha256: quality.bodySha256 });
+        }
+
+        const checkBinding = (code, id, actualHash) => {
+          if (!actualHash) errors.push({ code: `${code}_BODY_BINDING_MISSING`, id, chapter: number });
+          else if (actualHash !== parsed.bodySha256) errors.push({ code: `${code}_STALE_BINDING`, id, chapter: number, expected: parsed.bodySha256, actual: actualHash });
+        };
+        const dynamic = await readJsonOr(resolveInside(projectDir, "story/dynamic/state.json"), dynamicStateTemplate());
+        for (const [collectionName, collection] of Object.entries({ characters: dynamic.characters ?? {}, knowledge: dynamic.knowledge ?? {}, inventory: dynamic.inventory ?? {}, locations: dynamic.locations ?? {} })) {
+          for (const [id, item] of Object.entries(collection)) if (Number(item.chapter) === number) checkBinding(`DYNAMIC_${collectionName.toUpperCase()}`, id, item.bodySha256);
+        }
+        const memory = await readJsonOr(resolveInside(projectDir, "story/memory/index.json"), memoryTemplate());
+        for (const record of memory.records ?? []) if (Number(record.chapter) === number) checkBinding("MEMORY", record.id, record.sourceSha256);
+        const causal = await readJsonOr(resolveInside(projectDir, "story/causal-events.json"), { events: [] });
+        for (const event of causal.events ?? []) if (Number(event.chapter) === number && ["occurred", "cancelled"].includes(event.status)) checkBinding("CAUSAL", event.eventId, event.bodySha256);
+        const foreshadowing = await readJsonOr(resolveInside(projectDir, "story/foreshadowing.json"), { entries: [] });
+        for (const entry of foreshadowing.entries ?? []) if (Number(entry.sourceChapter) === number && entry.status !== "planned") checkBinding("FORESHADOW", entry.id, entry.bodySha256);
+        for (const ledgerType of Object.keys(LEDGER_FILES)) {
+          const ledger = await readJsonOr(resolveInside(projectDir, LEDGER_FILES[ledgerType]), ledgerTemplate());
+          for (const entry of ledger.entries ?? []) {
+            const sourceChapter = Number(entry.sourceChapter ?? entry.chapter ?? entry.endChapter ?? entry.checkpointChapter ?? 0);
+            if (sourceChapter !== number) continue;
+            if (ledgerType === "promise" && entry.status === "planned") continue;
+            if (ledgerType === "oppositionClock" && entry.status === "planned") continue;
+            checkBinding(`LEDGER_${ledgerType.toUpperCase()}`, entry.id, entry.bodySha256);
+          }
+        }
+      }
+
+      const numbers = await listChapterNumbers(projectDir);
+      for (let index = 0; index < numbers.length; index += 1) if (numbers[index] !== index + 1) errors.push({ code: "CHAPTER_SEQUENCE_GAP", chapter: numbers[index], message: `Expected chapter ${index + 1}, found chapter ${numbers[index]}.` });
+      const last = numbers.at(-1) ?? 0;
+      if (state.lastCommittedChapter !== last || state.nextChapter !== last + 1) errors.push({ code: "STATE_PROGRESS_MISMATCH", expectedLastCommittedChapter: last, actualLastCommittedChapter: state.lastCommittedChapter, expectedNextChapter: last + 1, actualNextChapter: state.nextChapter });
+      const pendingTransactions = (await fs.readdir(resolveInside(projectDir, "transactions/pending"))).filter((name) => name.endsWith(".json"));
+      if (pendingTransactions.length) errors.push({ code: "PENDING_TRANSACTIONS_REMAIN", transactions: pendingTransactions });
+
+      const integrityPass = errors.length === 0;
+      const status = integrityPass ? (warnings.length || state.integrityStatus === "warning" ? "warning" : "clean") : "error";
+      state.integrityStatus = status;
+      state.lastChapterIntegrityCheckAt = nowIso();
+      state.lastChapterIntegrityChapter = number;
+      state.lastChapterIntegrityErrorCount = errors.length;
+      state.lastChapterIntegrityWarningCount = warnings.length;
+      await writeJson(statePath, state);
+      return { projectId: normalizeProjectId(projectId), engineVersion: ENGINE_VERSION, scope: "chapter", chapter: number, checkedChapters: parsed ? 1 : 0, integrityPass, status, errorCount: errors.length, warningCount: warnings.length, recoveredTransactions, errors, warnings, checkedAt: state.lastChapterIntegrityCheckAt };
     });
   }
 

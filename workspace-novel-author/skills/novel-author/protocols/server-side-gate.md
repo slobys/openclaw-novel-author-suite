@@ -1,6 +1,6 @@
-# Server-Side Gate Protocol V5.4.3 / Novel Engine 0.4.10
+# Server-Side Gate Protocol V6.1 / Novel Engine 0.6.0
 
-Agent 侧 Gate 不能替代服务端持久化前校验。正式配套版本为 Novel Engine `0.4.10`。
+Agent 侧 Gate 不能替代服务端持久化前校验。正式配套版本为 Novel Engine `0.6.0`。
 
 服务端能力预检以 `novel_project_status.serverCapabilities` 和 `storyLedgers.chapterLengthGate` 为准，至少验证：
 
@@ -25,4 +25,4 @@ python3 {baseDir}/scripts/server_capability_gate.py status.json --hard-min 2000 
 
 `--hard-min` 应使用项目实际 resolved hard minimum；默认新规格为 2000，但项目可单独覆盖。
 
-若 `serverGateVerified=false`，可继续创作草稿和本地质量检查，但不得提交为 V5 正式章节，也不得向用户声称服务端硬门禁已启用。
+若 `serverGateVerified=false`，可继续创作草稿和本地质量检查，但不得提交为正式章节，也不得向用户声称服务端硬门禁已启用。

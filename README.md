@@ -1,6 +1,6 @@
 # OpenClaw Novel Author Suite
 
-面向 OpenClaw 的长篇小说全流程套件：`Novel Engine 0.4.10` 持久化插件 + `Novel Author V5.4.3 Codex Tool Projection` Agent Workspace。
+面向 OpenClaw 的长篇小说全流程套件：`Novel Engine 0.6.0` 持久化插件 + `Novel Author V6.1 Balanced-Fast` Agent Workspace。0.6.0 保留原有门禁、数据格式与可恢复收尾，同时减少重复资料读取、串行等待和每章全书扫描。
 
 它提供逐章隔离 Writer、角色化精简资料包、17类随稿审计、两个低 Token 独立审稿会话、幂等取消、可恢复提交、动态状态、三级记忆、长期故事台账、Closure 与完整性检查。
 
@@ -20,7 +20,7 @@
 只需执行一条总入口命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.5/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.6/setup.sh | bash
 ```
 
 终端会显示：
@@ -47,16 +47,16 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 
 ```bash
 # 只安装小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.5/setup.sh | bash -s -- 1
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.6/setup.sh | bash -s -- 1
 
 # 只安装小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.5/setup.sh | bash -s -- 2
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.6/setup.sh | bash -s -- 2
 
 # 无交互确认：安全卸载小说创作版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.5/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.6/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 3
 
 # 无交互确认：安全卸载小说转 AI 漫剧版
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.5/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/installer-v1.4.6/setup.sh | OPENCLAW_SUITE_CONFIRM_UNINSTALL=1 bash -s -- 4
 ```
 
 ## 系统逻辑结构
@@ -98,16 +98,16 @@ flowchart TB
 
 | 流程节点 | 完整含义 |
 | --- | --- |
-| 1 精简准备 | 读取服务端 `nextChapter`，按 Writer/Continuity/Reader 角色只返回需要的上下文；普通章不返回重复的 full packet + full context |
+| 1 精简准备 | 读取服务端 `nextChapter`，建立一次两分钟有效的章节资料快照，再从同一快照生成三个角色包；普通章不重复读取全套资料 |
 | 2 隔离写作 | 每章创建一个工具受限的新 Writer session；它只返回正文、计划和17类审计 JSON，主会话负责落盘、计算 Hash 和执行 Gate |
 | 3 篇幅 | 应用项目级篇幅契约；默认硬下限 2000、理想目标 2600、建议上限 3200 |
 | 4 十七类审计 | 隔离 Writer 对最终正文随稿检查17类问题；主会话只做确定性结构/Hash验证，不再重复模型通读 |
-| 5–6 独立审稿 | Continuity Auditor 与 Reader Editor 使用两个真实且不同的精简子会话；普通章默认低思考强度 |
+| 5–6 独立审稿 | Continuity Auditor 与 Reader Editor 使用两个真实且不同的精简子会话；最终正文 Hash 固定后并行执行，普通章默认低思考强度 |
 | 7 质量回执 | Writer 与两个审稿会话绑定同一份正文 SHA-256，记录服务端 Quality Receipt |
 | 8 提交前门禁 | 核对正文、审计、质量回执、章节号、requestId 与 Hash 是否一致 |
 | 9 提交 | Novel Engine 通过幂等、CAS 和可恢复事务写入章节 |
 | 10 闭环 | 更新因果、伏笔、承诺、关系、对手时钟、章节签名、动态状态和三级记忆 |
-| 11 完整性 | 检查章节及所有派生记录；只有 `clean` 才把 `nextChapter` 交给下一章 |
+| 11 完整性 | 普通章只验当前章及其派生记录；第1章、每5章检查点、严格模式或故障诊断再扫全项目；只有通过才把 `nextChapter` 交给下一章 |
 
 ### 各模块职责
 
@@ -135,7 +135,33 @@ Prepare → Draft → Length → 17类审计 → 两个独立审稿
 
 ### 为什么隔离 Writer 不需要工具
 
-OpenClaw 的叶子子会话默认收窄会话和消息工具，这是正常安全边界。`v0.4.10` 不再要求 Writer/Reviewer 自己访问文件、执行命令、调用 `novel_*` 或创建子会话：它们只返回一个严格 JSON，主会话用真实 completion、真实 session ID 和正文内容生成文件与 Hash。安装器会同时写入 `group:fs`、`group:runtime` 以及 `read/write/edit/apply_patch/exec/process` 具体 ID，确保 Codex Harness 能把本地工具真实投射给父会话。
+OpenClaw 的叶子子会话默认收窄会话和消息工具，这是正常安全边界。V6 不要求 Writer/Reviewer 自己访问文件、执行命令、调用 `novel_*` 或创建子会话：它们只返回一个严格 JSON，主会话用真实 completion、真实 session ID 和正文内容生成文件与 Hash。安装器会同时写入 `group:fs`、`group:runtime` 以及 `read/write/edit/apply_patch/exec/process` 具体 ID，确保 Codex Harness 能把本地工具真实投射给父会话。
+
+### V6.1 Balanced-Fast 与单工具收尾
+
+普通章节默认使用以下节流规则：
+
+| 项目 | Balanced-Fast 行为 |
+| --- | --- |
+| 资料读取 | 同一章节阶段只建一份快照，Writer 与两个 Reviewer 复用 |
+| Writer 资料包 | 最多 16,000 字符 |
+| Continuity 资料包 | 最多 8,000 字符 |
+| Reader 资料包 | 最多 6,000 字符 |
+| 审稿调度 | 两个 Reviewer 在最终正文 Hash 固定后并行 |
+| 通过项 | 仅写 `"pass"`，证据和修订建议只放 `issues` |
+| Integrity | 普通章查当前章；第1章及每5章查全项目 |
+
+`strict` 模式仍可用于发布前、重大修订或故障排查。Balanced-Fast 只减少重复工作，不降低必需检查数量。
+
+`novel_finalize_chapter` 把下列服务端操作收拢为一次调用：
+
+```text
+Audit -> Quality -> Commit -> 台账/状态/记忆 -> Closure -> Integrity
+```
+
+它不会减少检查项目，也不会信任模型口头声称。所有数据仍由原有 Engine 方法重新检查。中断后使用同一 `requestId` 再次调用时，工具先对账 Commit 和正文 Hash；已经提交的正文不会重写，后续幂等台账和 Closure 可以继续完成。
+
+这里的保证是“可恢复且幂等”，不是虚构的跨文件数据库原子事务。
 
 历史会话里已经生成、但 Engine `commit_status=not_found` 的正文只作为候选草稿。恢复时不复活被取消的旧任务，而是把候选稿交给同一个 `nextChapter` 的新 Writer session，重新绑定审计和质量回执。
 
@@ -166,12 +192,12 @@ openclaw-novel-author-suite/
 适用于 Linux、群晖/QNAP 等 NAS SSH 环境。安装前请先确认你信任本仓库，因为 OpenClaw 插件会在 Gateway 进程中运行代码。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.10/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.6.0/install.sh | bash
 ```
 
 安装器会：
 
-1. 从固定标签 `v0.4.10` 安装并启用 `novel-engine`，OpenClaw 2026.8.1+ 会显式完成插件能力授权；
+1. 从固定标签 `v0.6.0` 安装并启用 `novel-engine`，OpenClaw 2026.8.1+ 会显式完成插件能力授权；
 2. 把公共 Agent 模板部署到 `~/.openclaw/workspace-novel-author`；
 3. 已存在的同名 Workspace 文件先备份，不覆盖 `memory/`、`exports/`、`.novel-runtime/` 或小说数据；
 4. 创建或更新 `novel-author` Agent，并保留现有工具白名单后补齐策略组及 Codex 所需的具体文件/命令工具 ID；
@@ -192,7 +218,7 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 或者续写已有项目：
 
 ```text
-继续创作项目 <projectId> 的下一章。以服务端 nextChapter 为准，确认上一章 Closure 和 Integrity 后按 Balanced 流程执行。
+继续创作项目 <projectId> 的下一章。以服务端 nextChapter 为准，确认上一章 Closure 和 Integrity 后按 Balanced-Fast 流程执行。
 ```
 
 ## 更新
@@ -202,7 +228,7 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 ## 卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.4.10/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/v0.6.0/uninstall.sh | bash
 ```
 
 卸载只移除插件，不删除 Agent Workspace、会话或 `~/.openclaw/data/novels` 小说数据。
@@ -210,7 +236,7 @@ curl -fsSL https://raw.githubusercontent.com/slobys/openclaw-novel-author-suite/
 ## 手动安装
 
 ```bash
-openclaw plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.4.10 --force --accept-capabilities
+openclaw plugins install git:github.com/slobys/openclaw-novel-author-suite@v0.6.0 --force --accept-capabilities
 openclaw plugins enable novel-engine --accept-capabilities
 openclaw config validate
 openclaw gateway restart
@@ -227,9 +253,9 @@ openclaw plugins inspect novel-engine --runtime --json
 
 - [Novel Engine 技术说明](docs/PLUGIN.md)
 - [Novel Author Workspace 说明](docs/WORKSPACE.md)
-- [0.4.10 升级说明](UPGRADE-0.4.10.md)
-- [0.4.9 升级说明](UPGRADE-0.4.9.md)
-- [0.4.8 升级说明](UPGRADE-0.4.8.md)
+- [0.6.0 升级说明](UPGRADE-0.6.0.md)
+- [0.5.0 升级说明](UPGRADE-0.5.0.md)
+- [0.4.10 兼容基线说明](UPGRADE-0.4.10.md)
 - [安全策略](SECURITY.md)
 
 ## 开发验证

@@ -1,8 +1,8 @@
 {
   "id": "novel-engine",
   "name": "Novel Engine",
-  "description": "V5 persistent novel engine with project writing contracts, independent quality gates, recoverable transactions, story ledgers and tiered memory.",
-  "version": "0.4.10",
+  "description": "Novel Engine 0.6.0: Balanced-Fast cached role packets, scoped integrity, and recoverable idempotent chapter finalization.",
+  "version": "0.6.0",
   "skills": [
     "skills"
   ],
@@ -43,7 +43,8 @@
       "novel_revise_chapter",
       "novel_chapter_closure_record",
       "novel_chapter_closure_status",
-      "novel_project_integrity_check"
+      "novel_project_integrity_check",
+      "novel_finalize_chapter"
     ]
   },
   "toolMetadata": {
@@ -145,6 +146,9 @@
     },
     "novel_project_integrity_check": {
       "optional": true
+    },
+    "novel_finalize_chapter": {
+      "optional": true
     }
   },
   "configSchema": {
@@ -234,12 +238,6 @@
         "maximum": 86400000,
         "default": 600000
       },
-      "lockAcquireTimeoutMs": {
-        "type": "integer",
-        "minimum": 0,
-        "maximum": 120000,
-        "default": 15000
-      },
       "maxArtifactChars": {
         "type": "integer",
         "minimum": 1000,
@@ -271,5 +269,6 @@
         "default": 200
       }
     }
-  }
+  },
+  "schemaVersion": "2"
 }

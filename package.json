@@ -1,7 +1,7 @@
 {
   "name": "@slobys/openclaw-novel-engine",
-  "version": "0.4.10",
-  "description": "One-click OpenClaw novel author suite with a persistent engine, flexible length contracts, independent quality gates and recoverable story state.",
+  "version": "0.6.0",
+  "description": "Novel Engine 0.6.0: Balanced-Fast cached role packets and scoped integrity on top of the proven recoverable chapter finalizer.",
   "type": "module",
   "main": "./dist/index.js",
   "files": [
@@ -12,16 +12,9 @@
     "skills",
     "openclaw.plugin.json",
     "README.md",
-    "UPGRADE-0.4.1.md",
-    "UPGRADE-0.4.2.md",
-    "UPGRADE-0.4.3.md",
-    "UPGRADE-0.4.4.md",
-    "UPGRADE-0.4.5.md",
-    "UPGRADE-0.4.6.md",
-    "UPGRADE-0.4.7.md",
-    "UPGRADE-0.4.8.md",
-    "UPGRADE-0.4.9.md",
     "UPGRADE-0.4.10.md",
+    "UPGRADE-0.5.0.md",
+    "UPGRADE-0.6.0.md",
     "AUDIT-REPORT.md"
   ],
   "scripts": {
@@ -52,5 +45,20 @@
   },
   "engines": {
     "node": ">=22.22.3"
+  },
+  "novelEngine": {
+    "schemaVersion": "2",
+    "agentCompatibility": ">=5.4.3",
+    "capabilities": [
+      "balanced_fast_role_packets",
+      "chapter_cas",
+      "chapter_scoped_integrity",
+      "request_id_idempotency",
+      "recoverable_finalize",
+      "closure_ledger",
+      "independent_quality_gate",
+      "canonical_body_hash",
+      "project_integrity_check"
+    ]
   }
 }

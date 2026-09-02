@@ -8,7 +8,7 @@
 
 ## Writer 任务边界
 
-父会话只向 Writer 发送：compact writer packet、本章号、篇幅/类型要求和下面的输出 Schema。不得发送本地路径、命令、Engine 提交步骤或“完成整套生产流程”等编排指令。
+父会话只向 Writer 发送：当前 profile 的 writer packet、本章号、篇幅/类型要求和下面的输出 Schema。普通章 packet 不得超过 16000 字符。不得发送本地路径、命令、Engine 提交步骤或“完成整套生产流程”等编排指令。
 
 Writer 的唯一最终回复必须是一个 JSON 对象；允许外层单个 `json` 代码围栏，但不能附带其他说明：
 
@@ -51,6 +51,8 @@ Writer 的唯一最终回复必须是一个 JSON 对象；允许外层单个 `js
 
 Writer 可以省略 `bodySha256` 和 `writerSessionId`。若主动提供，父会话落盘器会严格校验，错误时拒绝落盘，不能口头纠正后继续。
 
+通过项只写精确字符串 `"pass"`。不要为每个通过项写 evidence、description 或分析段落；只有真实问题才进入 `issues`。`plan.selected` 保持一句话，`beats` 只列必要 Beat，避免把正文分析再写一遍。
+
 ## 父会话接收 Writer
 
 1. `sessions_spawn` 后登记真实 `taskId/runId/childSessionKey`；
@@ -73,7 +75,7 @@ python3 skills/novel-author/scripts/materialize_session_handoff.py writer \
 
 ## Reviewer 任务边界
 
-Reviewer 接收对应 compact packet 与最终正文，只返回：
+两个 Reviewer 在同一阶段并行启动，接收同一 context snapshot 派生的对应 packet 与最终正文。Continuity packet 不超过 8000 字符，Reader packet 不超过 6000 字符。只返回：
 
 ```json
 {
@@ -81,11 +83,17 @@ Reviewer 接收对应 compact packet 与最终正文，只返回：
   "chapterNo": 17,
   "reviewerRole": "continuity-auditor",
   "conclusion": "pass",
-  "checks": {},
+  "checks": {
+    "facts": "pass", "timeline": "pass", "knowledgeBoundary": "pass",
+    "stateContinuity": "pass", "causality": "pass",
+    "promiseContinuity": "pass", "relationshipContinuity": "pass"
+  },
   "issues": [],
   "summary": ""
 }
 ```
+
+通过项只写 `"pass"`，说明只放在真实 `issues` 中；`summary` 最多一句。Reader Editor 使用自己的 6 个必需 checks，不得照抄 Continuity 的 7 项。
 
 父会话用真实 reviewer session ID 和当前正文文件执行：
 
