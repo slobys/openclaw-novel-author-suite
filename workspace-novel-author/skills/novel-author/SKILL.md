@@ -18,7 +18,8 @@ description: 使用 Novel Engine 0.6.0 Balanced-Fast，以逐章隔离 Writer、
 - 类型体验：`protocols/genre-promise.md`；
 - 计划偏移：`protocols/outline-drift.md`；
 - Promise、关系、情绪：对应协议；
-- 服务端硬门禁：`protocols/server-side-gate.md`。
+- 服务端硬门禁：`protocols/server-side-gate.md`；
+- 可选阶段成长/世界展开：`protocols/stage-growth.md`；去同质化：`protocols/emotional-fatigue.md`。
 
 只读取当前阶段需要的协议，不把全部参考一次塞入上下文。
 
@@ -32,7 +33,7 @@ description: 使用 Novel Engine 0.6.0 Balanced-Fast，以逐章隔离 Writer、
 
 1. `novel_project_status` 与 `novel_project_config_read`；
 2. 普通章用 `novel_prepare_chapter(profile=balanced-fast, role=writer)`；关键章用 compact，只有诊断才使用 full；
-3. Continuity 与 Reader 必须复用同一 `contextSnapshot.key` 派生资料包。只有快档明确缺少必需事实时才调用 `novel_dynamic_state_context`、`novel_memory_search`、`novel_story_ledger_query`；
+3. Writer 启动前顺序取得三个角色的真实 Prepare 响应，核对同一 `contextSnapshot.key` 并保存本章 evidence；后两次正常应热命中。Writer 结束后直接用保存的 reviewer packet，不因超过TTL重新 Prepare。恢复时核对 chapter/key/来源指纹，缺包或权威内容变更才有界重组。只有快档明确缺少必需事实时才调用 `novel_dynamic_state_context`、`novel_memory_search`、`novel_story_ledger_query`；
 4. 每章创建一个新的 isolated Writer session，由它内部比较 2–3 个推进方案并返回 `novel-writer-return-v1` JSON；主会话使用真实 session ID 和 `materialize_session_handoff.py` 落盘、计算 Hash，再执行确定性 Gate。Writer 不需要文件、命令、Novel Engine 或会话编排工具。
 
 优先选择：主角有代价主动选择、因果成立、至少一个关系/信息/Promise/对手压力变化、与近期章节不机械重复，并自然兑现 `genreProfile`。
@@ -41,13 +42,13 @@ description: 使用 Novel Engine 0.6.0 Balanced-Fast，以逐章隔离 Writer、
 
 隔离 Writer 对最终正文随稿执行 17 项逻辑审计：facts、timeline、space、motivation、knowledge、worldRules、resources、causality、foreshadowing、originality、voice、sceneDynamics、promiseFairness、relationshipContinuity、emotionCurve、fatigueRisk、oppositionPressure。通过项只返回精确 `"pass"`；只有问题项才在 `issues` 返回证据和修复建议。它把审计和正文放在同一个结构化最终回复中；主会话先将回执确定性落盘，再使用 `writer_handoff_gate.py` 校验完整审计、真实 Writer session ID 与正文 Hash，不再单独进行一次模型通读。
 
-默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200。Writer 可把 2300–2900 作为普通章工作区间以留出汉字统计余量；达到项目硬下限即通过长度 Gate，理想目标不是强制最低值。只有低于硬下限才把准确差额发回同一个 Writer 一次，并用 `draft_revision_gate.py` 验证正文 Hash 确实变化且达到下限；禁止主会话补字、新建 Writer 或重复口头承诺扩写。同 Hash、仍不足或第二次尝试立即 `blocked`。
+默认篇幅为硬下限 2000、理想目标 2600、建议上限 3200。只使用本书 resolved writingContract，不另设写死工作区间，不从前章实际长度推导目标。Writer 应朝目标区间充实人物行动、场景变化、证据与后果，不贴硬下限写或复述填字；达到项目硬下限即通过长度 Gate，理想目标不是强制最低值。只有低于硬下限才把准确差额发回同一个 Writer 一次，并用 `draft_revision_gate.py` 验证正文 Hash 确实变化且达到下限；禁止主会话补字、新建 Writer 或重复口头承诺扩写。同 Hash、仍不足或第二次尝试立即 `blocked`。
 
-调用 `novel_chapter_audit_record` 保存经 Gate 验证的 Writer Audit。随后从同一快照取得 continuity/reader packet，在同一阶段并行启动两个真实隔离上下文执行 Continuity Auditor 与 Reader Editor；Reviewer 通过项只写 `"pass"`，证据仅写问题项。主会话绑定真实 session/正文 Hash 后生成 Genre Gate 和 provisional Chapter Signature。Writer 不得自己替代审稿角色。普通章节 Writer 默认 `thinking=medium`、reviewer 默认 `thinking=low`；关键章才提升强度。
+本地保存经 Gate 验证的 Hash 绑定 Writer Audit 与完整 Finalize payload，不提前持久化 Audit/Quality，不额外调用已有快档内部执行的 `novel_logic_audit_prepare`。随后使用预先保存的 continuity/reader packet，在同一阶段并行启动两个真实隔离上下文执行 Continuity Auditor 与 Reader Editor；Reviewer 通过项只写 `"pass"`，证据仅写问题项。主会话绑定真实 session/正文 Hash 后生成 Genre Gate 和 provisional Chapter Signature。Writer 不得自己替代审稿角色。普通章节 Writer 默认 `thinking=medium`、reviewer 默认 `thinking=low`；关键章才提升强度。
 
 17 类章节总审计与 reviewer checks 不可混用：Continuity 固定 7 项，Reader 固定 6 项，具体 Schema 与会话复用方式见 `protocols/independent-quality.md`。`note`/`warning` 不自动触发修订；只有阻断问题才修改正文。审稿检查先经 `independent_audit_gate.py` 标准化，Quality 提交必须原样使用回执中的 `engineReviews`，禁止自行生成 `pass：说明`。
 
-提交 Engine Quality 前按同一协议校验五处正文 Hash，并把本地 `genreGatePass` 映射为 Engine 所需的 `genreGate.pass`；不要用服务端报错逐字段试探 Payload。
+提交 Finalize（仅旧回退独立记录 Engine Quality）前按同一协议校验五处正文 Hash，并把本地 `genreGatePass` 映射为 Engine 所需的 `genreGate.pass`；不要用服务端报错逐字段试探 Payload。
 
 正文任何修改都使旧 Audit、Quality、Signature 和本地 receipt 失效，但同章修订优先复用原 Writer 和两个审稿 session，对新 Hash 重新出具结论。每章最多一轮自动定点修订；Schema/Payload 错误只修结构，禁止重新运行语义审稿。
 
@@ -61,13 +62,13 @@ description: 使用 Novel Engine 0.6.0 Balanced-Fast，以逐章隔离 Writer、
 
 本地 Precommit 通过后，默认只调用 `novel_finalize_chapter`。普通章传 `productionProfile=balanced-fast`，关键章传 `productionProfile=strict`。Payload 同时携带最终正文、Writer Audit、两份独立 Review、Genre Gate、Signature、摘要、连续性变化和本章适用的台账/状态/记忆更新。Engine 仍逐项执行原有硬门禁，不得因为工具数量减少而省略审稿。
 
-若调用中断，使用完全相同的 `requestId` 和正文恢复一次。Engine 会先查询 Commit；已提交则验证 Hash 并继续 Closure/Integrity，不重新写正文、重跑 Audit 或重做 Quality。只有运行时没有该工具时才使用下面的旧兼容链路。
+若调用中断，使用完全相同的 `requestId` 和正文恢复一次。Engine 会先查询 Commit；已提交则验证 Hash 并继续 Closure/Integrity，不重新写正文、重跑 Audit 或重做 Quality。Finalize 成功后才能报告 Engine Audit/Quality 已持久化；不得把本地 receipt 冒充服务端成功。仅运行时没有该工具时使用下面的旧兼容链路，先真实记录 `novel_chapter_audit_record`、`novel_chapter_quality_record`，再 Commit；不能伪造回执。
 
 使用稳定 `requestId` 调用 `novel_commit_chapter`。正文 Hash 统一采用 `CRLF/CR→LF + trim + UTF-8`。服务端会重算篇幅/Hash，验证 Audit/Quality 和 requestId Payload，并通过可恢复事务写入；返回的 `confirmed/chapterNo/requestId/bodySha256` 可直接作为状态机证据。
 
 投递不确定时先 `novel_commit_status`：只有 `not_found` 才能用同一 requestId、同一 Payload 重试；`committed` 直接进入 Closure；`pending` 继续对账，绝不盲目重提。
 
-## 服务端 Closure
+## 服务端 Closure（以下调用仅旧兼容链路）
 
 commit 后按真实变化调用因果、伏笔、通用故事台账、`novel_dynamic_state_update` 与 `novel_memory_record`。所有记录绑定当前正文 Hash。然后 `novel_chapter_closure_record`，再 `novel_chapter_closure_status` 确认 complete。
 
@@ -82,6 +83,8 @@ Engine Closure 的 `evidence` 必须是各 `operations.<name>` 对象内部的�
 修订前 `novel_read_chapter` 读取当前 Hash 与 revision；新正文重新 Audit/Quality 后调用 `novel_revise_chapter`，传 `expectedBodySha256`、`expectedRevision` 和稳定 requestId。修订后重建所有 stale body-binding。
 
 ## 长线控制与交付
+
+Prepare 的 lengthGuidance 基于最近5章真实 Meta，只提示偏低/下降，不阻断已达硬下限的章。可选 stageContext 的 plannedStage 不是实际成长；missing/unresolved IDs 需证据化，不能因进入新章段清零旧代价/承诺。Writer plan 可选简写本章功能、开场/冲突/解法、情绪转向、钩子、stageId 与一句变化理由；最终 Signature 必须描述实际正文而非照抄计划。
 
 每 5 章运行 Narrative Fatigue、Arc Audit、Outline Drift；优先调整未来 3–8 章，不静默改写历史。
 

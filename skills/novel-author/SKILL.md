@@ -28,14 +28,16 @@ description: 操作 Novel Engine 0.6.0 服务端工具，负责 Balanced-Fast �
 
 ### 1. Prepare
 
-调用 `novel_prepare_chapter`。资料包包含：
+Writer 启动前顺序调用 `novel_prepare_chapter` 取得 writer、continuity-auditor、reader-editor 三个角色资料包；保存三个真实响应及同一 snapshot key，后两次正常应 `reused=true`。Reviewer 后续直接使用保存的自身包；恢复时检查 chapter/key/来源指纹，仅缺包或权威事实改变才有界重组。资料包包含：
 
 - 本章章纲与原创设定；
 - 最近章节摘要、连续性变化和上一章末尾；
 - Character / Knowledge / Inventory / Location 动态状态；
 - short / mid / long 三级记忆候选；
 - 因果、伏笔、Promise、关系、Opposition Clock；
-- 最近 Chapter Signature；
+- Writer/Reader 最近三章精简实际 Chapter Signature（chapter/bodySha256 保留）；
+- resolved 配置的 lengthGuidance 与近5章真实 Meta 趋势；
+- 可选 stageContext，明确规划、已观察与 missing/unresolved 证据；
 - 17 项审计契约和项目级篇幅规格。
 
 若返回 `ready:false`，先补齐指定 artifact。若上一章 Closure 未完成且项目要求 Closure，不得绕过。
@@ -55,11 +57,11 @@ Scene 和 Beat 数量服从项目实际 writing contract。标题参数只传纯
 
 ### 3. Logic audit
 
-调用 `novel_logic_audit_prepare`，再用最终正文执行完整审计。至少覆盖：
+快档 Prepare 已包含内部逻辑审计事实与 auditContract；默认不再调用 `novel_logic_audit_prepare`，它仅用于明确资料缺失/诊断或旧兼容。由隔离 Writer 对最终正文随稿执行完整审计，主会话只做确定性验证。至少覆盖：
 
 `facts`、`timeline`、`space`、`motivation`、`knowledge`、`worldRules`、`resources`、`causality`、`foreshadowing`、`originality`、`voice`、`sceneDynamics`、`promiseFairness`、`relationshipContinuity`、`emotionCurve`、`fatigueRisk`、`oppositionPressure`。
 
-正文固定后调用 `novel_chapter_audit_record`。`decision=pass` 时必须覆盖全部项目要求类别，不得含 error、block 或 fatal；服务端会重算汉字数和正文 SHA-256。
+正文固定后本地保存 Hash 绑定 Writer Audit，交一次 Finalize 持久化；默认不前置调用 `novel_chapter_audit_record`。`decision=pass` 时必须覆盖全部项目要求类别，不得含 error、block 或 fatal；服务端会重算汉字数和正文 SHA-256。
 
 ### 4. Independent quality
 
@@ -69,7 +71,7 @@ Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会
 - Reader Editor：只审可读性、重复、节奏、情感、场景动态、人物声音、类型承诺、章节功能和钩子；
 - Writer 不得自己替代两个审稿角色。
 
-生成 Genre Gate 与 provisional Chapter Signature 后调用 `novel_chapter_quality_record`。任何正文修改都会使旧 Audit 和 Quality receipt 的 Hash 失效，必须重新生成。
+生成 Genre Gate 与描述实际正文的 provisional Chapter Signature 后运行本地 Quality/Precommit Gate，原样使用标准化 `engineReviews` 构建 Finalize payload；默认不前置调用 `novel_chapter_quality_record`。任何正文修改都会使旧 Audit 和 Quality receipt 的 Hash 失效，必须重新生成。
 
 服务端能验证正文 Hash、审稿角色、三会话 ID 不同、结论和阻断问题；它不能仅凭 ID 证明三个会话在物理上确实隔离，因此编排 Agent 必须真实创建独立上下文。
 
@@ -79,7 +81,7 @@ Writer、Continuity Auditor、Reader Editor 必须使用三个不同的隔离会
 
 该工具仍逐项执行原有 Audit、Quality、Commit、Closure 和 Integrity 硬门禁。它是“可恢复且幂等”的编排入口，不是跨文件数据库原子事务。调用中断后必须使用完全相同的 `requestId` 和正文恢复；已提交章节只继续补齐派生记录和 Closure，不重复写正文或重做语义审稿。
 
-只有运行时确实没有 `novel_finalize_chapter` 时，才使用下面的兼容链路。
+Finalize 成功后才报告服务端 Audit/Quality 持久化；不得假造回执，不重复其已执行的 Integrity。只有运行时确实没有 `novel_finalize_chapter` 时，才先真实调用 `novel_chapter_audit_record` 与 `novel_chapter_quality_record`，再使用下面的兼容链路。
 
 ### 6. 兼容 Commit
 
@@ -138,3 +140,9 @@ Commit 成功后，按正文真实变化更新：
 每章独立执行 Prepare → Draft → Audit → Independent Quality → Commit → Closure → Integrity。不得先写完多章再集中提交。已确认 committed 的章节永不重复生成或覆盖。
 
 多章默认汇报章节号、标题、汉字数、Audit、Quality、Commit、Closure、Integrity 和下一章号；用户要求完整全文时再读取或导出，避免把所有正文反复塞入父会话。
+
+## M2 可选阶段与稳定目标
+
+通过已有 artifact write/read 的 `stage-plan` 保存受限 `novel-stage-plan-v1` JSON（最多50阶段、id/range/goal；可选成长/阻力/代价/世界展开、承诺/关系/伏笔与桥梁引用）。章节范围不能证明实际成长；observedStage 只来自 Hash 绑定的 committed signature。未来引用可以尚未创建，Prepare 明示 missing/unresolved，不创建或回收任何台账。无计划旧书完全兼容；坏计划显式拒绝。
+
+只以本书 resolved writingContract 为准，近5章长度趋势与疲劳签名仅警示，不静默升下限、不自动填字或重写历史。16000/8000/6000 caps 不变；必要章节计划、规格、审计及阶段引用/Hash 不靠总尾截断省略，预算错误或 packetDiagnostics 需窄查询/精简规划。字符量/本地缓存不等于真实计费Token收益；本轮没有付费十章A/B或生产验证。

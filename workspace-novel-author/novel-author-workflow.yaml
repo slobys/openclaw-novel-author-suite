@@ -43,7 +43,7 @@ defaults:
   critical_or_checkpoint_integrity_scope: project
 
 telemetry:
-  per_chapter: [elapsed_seconds, writer_input_tokens, writer_output_tokens, continuity_input_tokens, continuity_output_tokens, reader_input_tokens, reader_output_tokens, retries]
+  per_chapter: [tool_call_counts, prepare_cold_count, prepare_reused_count, role_packet_chars, elapsed_seconds, writer_input_tokens, writer_output_tokens, continuity_input_tokens, continuity_output_tokens, reader_input_tokens, reader_output_tokens, retries]
   use_incremental_session_usage_only: true
   totalTokens_is_not_assumed_to_equal_new_billable_tokens: true
   missing_provider_usage: report_unavailable_do_not_guess
@@ -114,17 +114,30 @@ workflow:
       - skills/novel-author/scripts/job_state.py_guard
       - novel_prepare_chapter_profile_balanced_fast_role_writer_for_ordinary_chapter
       - novel_prepare_chapter_profile_compact_role_writer_for_critical_chapter
-      - reuse_one_engine_context_snapshot_for_all_three_roles
+      - novel_prepare_chapter_role_continuity_auditor_before_writer_spawn
+      - novel_prepare_chapter_role_reader_editor_before_writer_spawn
+      - save_all_three_actual_prepare_responses_and_same_context_snapshot_key
+      - verify_role_packet_chapter_and_source_fingerprint_on_recovery
+      - bounded_reprepare_only_when_missing_packet_or_authoritative_sources_changed
       - extra_context_query_only_when_packet_reports_a_required_fact_missing
+    role_prepare_contract:
+      same_profile_as_writer: true
+      ordinary_sequential_calls: [writer, continuity-auditor, reader-editor]
+      save_actual_responses_not_synthesized_packets: true
     inputs: [project_id, current_project_status, project_config]
     outputs:
       - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/context-package.json
+      - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/prepare-writer.json
+      - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/prepare-continuity.json
+      - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/prepare-reader.json
     hard_gate:
       - chapter_no_is_engine_authorized_next_chapter
       - previous_required_closure_is_complete
       - minimum_engine_context_package_received
       - all_important_context_has_engine_traceability
       - ordinary_role_packets_respect_character_caps
+      - all_three_prepare_responses_are_saved_before_writer_spawn
+      - all_three_snapshot_keys_match_when_same_profile_is_supported
 
   stage_20_plan_and_draft:
     state: drafting
@@ -220,7 +233,8 @@ workflow:
     actions:
       - skills/novel-author/scripts/job_state.py_guard
       - skills/novel-author/scripts/writer_handoff_gate.py
-      - novel_chapter_audit_record_from_writer_audit
+      - save_hash_bound_local_writer_audit_receipt_and_complete_finalize_audit_payload
+      - defer_engine_audit_record_to_novel_finalize_chapter
     semantic_policy:
       audit_actor: isolated_writer_session
       main_session_full_body_semantic_reread: forbidden
@@ -228,7 +242,7 @@ workflow:
       audit_rerun_after_body_change: same_writer_session_once
     categories: [facts, timeline, space, motivation, knowledge, worldRules, resources, causality, foreshadowing, originality, voice, sceneDynamics, promiseFairness, relationshipContinuity, emotionCurve, fatigueRisk, oppositionPressure]
     hard_gate:
-      - engine_audit_decision_is_pass
+      - local_writer_audit_decision_is_pass
       - all_project_required_categories_present
       - blocking_issue_count_is_zero
       - audit_body_sha256_matches_final_body
@@ -237,8 +251,8 @@ workflow:
     state: quality_gate
     actions:
       - skills/novel-author/scripts/job_state.py_guard
-      - derive_balanced_fast_continuity_packet_from_same_context_snapshot
-      - derive_balanced_fast_reader_packet_from_same_context_snapshot
+      - use_saved_continuity_packet_without_post_writer_prepare
+      - use_saved_reader_packet_without_post_writer_prepare
       - create_or_reuse_both_isolated_reviewers_in_parallel
       - skills/novel-author/scripts/job_state.py_register_task_for_each_reviewer
       - sessions_yield_until_required_completion_events
@@ -300,7 +314,7 @@ workflow:
       - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/reader-review.json
       - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/current-signature.json
       - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/quality-receipt.json
-      - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/engine-quality-receipt.json
+      - .novel-runtime/evidence/{job_id}/chapter-{chapter_no}/finalize-payload.json
     hard_gate:
       - reviewer_sessions_are_real_and_distinct_from_writer
       - independent_audit_pass_is_true
@@ -323,7 +337,8 @@ workflow:
     hard_gate:
       - gate_pass_is_true
       - payload_pass_is_true
-      - engine_audit_receipt_and_local_quality_receipts_exist
+      - hash_bound_local_writer_audit_and_quality_receipts_exist
+      - complete_finalize_payload_is_validated_without_claiming_engine_persistence
       - receipt_body_hash_matches_commit_body
 
   stage_60_recoverable_finalize:
@@ -334,6 +349,15 @@ workflow:
     payload:
       ordinary_chapter: {productionProfile: balanced-fast}
       critical_chapter: {productionProfile: strict}
+    legacy_fallback_only_when_finalize_unavailable:
+      actions:
+        - skills/novel-author/scripts/job_state.py_guard
+        - novel_chapter_audit_record_from_verified_writer_audit
+        - novel_chapter_quality_record_from_verified_engineReviews
+        - novel_commit_chapter_with_same_validated_body_and_request_id
+        - stage_70_server_closure_legacy_fallback_only
+        - stage_80_integrity_gate_legacy_fallback_only
+      fake_engine_receipt: forbidden
     idempotency_key: '{job_id}-ch{chapter_no}'
     hard_gate:
       - engine_confirms_chapter_number

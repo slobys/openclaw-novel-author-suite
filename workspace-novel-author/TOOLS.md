@@ -147,9 +147,9 @@ Reviewer 必须只返回：
 
 `requiredAuditCategoryCount=17` 只说明 `novel_chapter_audit_record` 的覆盖要求。不得据此给每个 reviewer 伪造 17 项 `checks`。非阻断建议放入 `issues`；Schema/Payload 错误只修结构，不触发模型重审。
 
-每个 reviewer check 的标准值是 `{ "status": "pass|note|warning|not_applicable", "evidence": "可选说明" }`。兼容精确状态字符串 `"pass"`，但不接受描述文字或 `"pass：说明"`。`independent_audit_gate.py` 成功后会生成 `engineReviews`；调用 `novel_chapter_quality_record` 时必须原样传入其中的两个 review，不得再次重组。
+每个 reviewer check 的标准值是 `{ "status": "pass|note|warning|not_applicable", "evidence": "可选说明" }`。兼容精确状态字符串 `"pass"`，但不接受描述文字或 `"pass：说明"`。`independent_audit_gate.py` 成功后会生成 `engineReviews`；构建 Finalize 的 Quality payload（仅旧回退调用 `novel_chapter_quality_record`）时必须原样传入其中的两个 review，不得再次重组。
 
-调用 `novel_chapter_quality_record` 前必须一次检查完整 Hash 契约：
+本地 Precommit/Finalize 前必须一次检查完整 Hash 契约；默认不前置持久化 Audit/Quality：
 
 - `content` 计算出的 canonical SHA-256；
 - `continuityReview.bodySha256`；
@@ -243,3 +243,9 @@ Reviewer 必须只返回：
 - `chapterSignature` → `story/ledgers/chapter-signatures.json`
 - `dynamicState` → `story/dynamic/state.json`
 - `memoryIndex` → `story/memory/index.json`
+
+## M2 有界 Prepare 与可选阶段计划
+
+Writer 启动前顺序取得三个真实 role 响应，保存 `prepare-writer.json`、`prepare-continuity.json`、`prepare-reader.json` 和同一 snapshot key；后两次应热命中。Reviewer 使用保存的自身 packet，禁止重复全量 Prepare。恢复时检查 chapter/key/来源指纹，缺包或权威内容变更才有界重组。记录实际 tool calls、prepare 冷/热与 packetChars；字符不是供应商 Token。
+
+现有 artifact write/read 可选 `artifactType=stage-plan`，CAS 不变；格式见 `skills/novel-author/protocols/stage-growth.md`。旧 Engine 不支持时不得偷偷升级生产插件；旧书无计划完全兼容。`lengthGuidance` 来自本书 resolved config + 最近5章真实 Meta。Python 本地汉字计数目前与 Engine Unicode Script=Han 的扩展范围不同，本轮不声称已统一。

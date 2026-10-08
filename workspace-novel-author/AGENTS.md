@@ -72,18 +72,18 @@ OpenClaw 的可靠运行时急停是在发起子会话的主聊天中发送 `/st
 
 ## 7. 长篇上下文
 
-普通章写作前默认调用 `novel_prepare_chapter(profile=balanced-fast, role=writer)`。同一章后续两个 reviewer 调用必须命中同一 `contextSnapshot.key`，不得重新组装一份全量事实包。卷边界、重大反转、终局或用户明确要求严格审稿时改用 `profile=compact`；只有人工排错才允许 `profile=full`。两个审稿人分别读取自己的 role packet，不得接收主聊天历史或完整 Writer 资料包。只有快档明确缺少本章必需事实时才允许追加窄查询：
+普通章在启动 Writer 前顺序取得 `novel_prepare_chapter(profile=balanced-fast)` 的 writer、continuity-auditor、reader-editor 三个真实响应，确认同一 `contextSnapshot.key` 并保存至本章 evidence；后两次正常应 `reused=true`，不得伪造。Writer 结束后直接使用保存的 Reviewer 包，避免超 TTL 重新准备。恢复时校验包的 chapter/key/来源指纹；只在包缺失或权威来源确已变更时有界重新准备。卷边界、重大反转、终局或用户明确要求严格审稿时改用 `profile=compact`；只有人工排错才允许 `profile=full`。两个审稿人分别读取自己的 role packet，不得接收主聊天历史或完整 Writer 资料包。只有快档明确缺少本章必需事实时才允许追加窄查询：
 
 - `novel_dynamic_state_context`；
 - `novel_memory_search`；
 - `novel_story_ledger_query`；
 - `novel_foreshadowing_due`。
 
-Balanced-Fast 的字符上限为 Writer 16000、Continuity 8000、Reader 6000；默认只取最近 2 章摘要、3/4/2 条 short/mid/long 记忆和最近 3 个章节签名。资料包仍覆盖本章大纲、篇幅/类型规格、上一章末尾、当前状态及相关长线任务。重要旧事实进入正文前必须能追溯到 engine/已提交正文及当前 Hash。不得同时把重复的完整 `packet` 与完整 `context` 注入同一个会话。
+Balanced-Fast 的字符上限为 Writer 16000、Continuity 8000、Reader 6000；默认只取最近 2 章摘要、3/4/2 条 short/mid/long 记忆和最近 3 个章节签名。资料包仍覆盖本章大纲、篇幅/类型规格、上一章末尾、当前状态及相关长线任务。可选 `stage-plan` 进入 `stageContext`；plannedStage 不等于实际成长，latestObservedStageId 只从 Hash 绑定的 committed signature 获得，missing/unresolved 桥梁不得冒充已发生。保留旧承诺、关系、代价。重要旧事实进入正文前必须能追溯到 engine/已提交正文及当前 Hash；packetDiagnostics 或明确预算错误要求补窄查询，禁止用截断包假称必要事实齐全。不得同时把重复的完整 `packet` 与完整 `context` 注入同一个会话。
 
 ## 8. 篇幅、逻辑审计与独立质量
 
-先解析项目 `writingContract`。默认规格为：硬下限 2000、理想目标 2600、建议上限 3200；项目配置可覆盖默认值。理想目标不是最低门槛，正文达到项目 `minHanChars` 后必须直接进入后续 Gate，不得为了凑到 `targetMinHanChars` 自动扩写。
+先解析项目 `writingContract` 与 Prepare `lengthGuidance`。始终以当前 resolved 配置为目标，最近实际章长不降低目标。近5章 Meta 趋势只作透明提示，非硬门禁。默认规格为：硬下限 2000、理想目标 2600、建议上限 3200；项目配置可覆盖默认值。理想目标不是最低门槛，正文达到项目 `minHanChars` 后必须直接进入后续 Gate，不得为了凑到 `targetMinHanChars` 自动扩写。
 
 Writer 必须在唯一最终回复中返回 `novel-writer-return-v1` JSON，包含纯标题、精简计划、正文和17类随稿审计。通过项的 `checks` 只返回精确字符串 `"pass"`，只有 warning/error/block/fatal 项才在 `issues` 写证据与修复建议；不得为 17 个通过项分别生成长篇解释。它不得声称已经写文件或调用 Engine。主会话把该回复原样保存为临时 source return，使用 `materialize_session_handoff.py writer` 生成 `plan.json`、`chapter.md`、`writer-audit.json` 和 materialize receipt，再运行 `writer_handoff_gate.py` 与 `chapter_length.py`；主会话不得为了检查而再次进行一次模型通读。
 
@@ -92,12 +92,12 @@ Writer 必须在唯一最终回复中返回 `novel-writer-return-v1` JSON，包�
 提交前必须满足：
 
 1. 本地长度与 Payload Gate 通过；
-2. `novel_chapter_audit_record` 使用隔离 Writer 对最终正文随稿生成、并经 `writer_handoff_gate.py` 验证的完整17类审计；主会话不得另起一次语义审计；
+2. 本地保存并验证隔离 Writer 对最终正文随稿生成的完整17类审计，形成 Hash 绑定的本地 receipt 与 Finalize Audit payload；默认不前置调用 `novel_chapter_audit_record`，主会话不得另起一次语义审计；
 3. Continuity Auditor 与 Reader Editor 均为独立真实 session，并在普通章同一阶段并行启动；它们返回 `novel-review-return-v1` JSON，由主会话落盘并绑定同一正文 Hash；
 4. Genre Gate 与 provisional Chapter Signature 已生成；
 5. 本地 `precommit_gate.py` 通过；
 6. 优先把已验证的 Audit、两份 Review、Genre Gate、Signature、正文和派生变更一次交给 `novel_finalize_chapter`；
-7. 只有运行时没有 `novel_finalize_chapter` 时，才按旧兼容链路依次调用 Quality、Commit、台账、Closure 与 Integrity。
+7. 只有运行时没有 `novel_finalize_chapter` 时，才按旧兼容链路真实调用 Audit、Quality、Commit、台账、Closure 与 Integrity；不得用未发生的 Engine 回执替代。Finalize 成功后才可报告服务端 Audit/Quality 已持久化，不额外重复 Integrity。
 
 17 类是 `novel_chapter_audit_record` 的章节总审计覆盖数，不能套用到独立审稿的 `checks`：
 

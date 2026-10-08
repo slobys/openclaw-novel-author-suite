@@ -183,6 +183,9 @@ test("recoverable finalizer runs the proven gate chain and closes the chapter", 
   assert.deepEqual(engine.calls.slice(0, 4).map(([name]) => name), ["commitStatus", "audit", "quality", "commit"]);
   assert.equal(engine.calls.at(-2)[0], "closure");
   assert.equal(engine.calls.at(-1)[0], "integrity");
+  for (const name of ["audit", "quality", "commit", "closure", "integrity"]) {
+    assert.equal(engine.calls.filter(([called]) => called === name).length, 1, `${name} should execute once inside the one finalizer invocation`);
+  }
   const causal = engine.calls.find(([name]) => name === "causal")[1];
   assert.equal(causal.event.chapter, 1);
   assert.equal(causal.event.bodySha256, result.bodySha256);

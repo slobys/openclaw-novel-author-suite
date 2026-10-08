@@ -40,6 +40,9 @@ def main():
     }
     result["hardGatePass"] = result["hanChars"] >= args.hard_min
     result["targetRangePass"] = args.hard_min <= result["hanChars"] <= args.target_max
+    result["preferredTargetRangePass"] = args.target_min <= result["hanChars"] <= args.target_max
+    result["belowPreferredTarget"] = result["hanChars"] < args.target_min
+    result["warnings"] = ["BELOW_PREFERRED_TARGET"] if result["belowPreferredTarget"] else []
     result["preferredTargetReached"] = result["hanChars"] >= args.target_min
     result["overPreferredMax"] = result["hanChars"] > args.target_max
     if not result["hardGatePass"]:

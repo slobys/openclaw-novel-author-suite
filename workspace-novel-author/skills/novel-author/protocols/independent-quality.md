@@ -71,7 +71,7 @@
 
 ## Payload 错误不是语义失败
 
-首次调用 `novel_chapter_quality_record` 前，一次完成以下结构检查：
+本地构建 Finalize payload（仅旧回退调用 `novel_chapter_quality_record`）前，一次完成以下结构检查：
 
 - `content` 的 canonical SHA-256；
 - `continuityReview.bodySha256`；
@@ -102,4 +102,10 @@ python3 {baseDir}/scripts/independent_audit_gate.py \
 
 本地 Gate 与 Novel Engine 0.6.0 使用相同的 canonical reviewer roles、7/6 项检查范围、非阻断状态和正文 Hash 绑定规则。
 
-Gate 成功后会在 `independent-receipt.json.engineReviews` 中生成标准化的 `continuityReview` 与 `readerReview`。调用 `novel_chapter_quality_record` 时必须原样使用这两个对象；Gate 之后禁止再次改写、补写或拼接 `checks`。若原始值是 `pass：说明` 或只有说明，本地 Gate 会在调用 Engine 前直接拒绝。
+Gate 成功后会在 `independent-receipt.json.engineReviews` 中生成标准化的 `continuityReview` 与 `readerReview`。构建 Finalize Quality payload 时必须原样使用这两个对象；Gate 之后禁止再次改写、补写或拼接 `checks`。若原始值是 `pass：说明` 或只有说明，本地 Gate 会在调用 Engine 前直接拒绝。
+
+## 默认一次收尾与资料预取
+
+Writer 启动前顺序取齐三角色 Prepare 并保存真实响应/key/指纹，Reviewer 不在 Writer 后重取全量包。普通快档应冷1热2；关键章 compact 使用相同来源key但不冒充热命中。恢复只因缺包或权威资料变动有界重取，不能因 schema/network 错误重新语义审稿。
+
+本地审计/质量/预提交通过后默认一次 Finalize；服务端 Audit/Quality 各由 Finalize执行一次，成功才保存 Engine 回执。Finalize 不可用才真实记录 Audit、Quality、Commit 与完整 Closure/Integrity。两者不是删审稿，仍17类 Writer、7/6 reviewer检查及三个真实独立会话。
