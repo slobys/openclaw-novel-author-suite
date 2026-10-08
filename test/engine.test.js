@@ -4,7 +4,266 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { LOGIC_AUDIT_CATEGORIES, NovelEngine } from "../src/engine.js";
+import { finalizeChapterRecoverable } from "../src/finalize.js";
 import { sha256 } from "../src/utils.js";
+
+test("M2 fix protects legal stageId identity in actual Writer/Reader packets", async (t) => {
+  for (const length of [16, 128]) for (const profile of ["balanced-fast", "compact"]) for (const role of ["writer", "reader-editor"]) {
+    await t.test(`${length}-character ${profile} ${role}`, async (child) => {
+      const { engine, projectDir } = await fixture(child, { minChapterChars: 800, minChapterHanChars: 2000, targetChapterHanChars: 2600, targetChapterHanCharsMax: 3200, requireClosureReceipt: true });
+      const stageId = "s".repeat(length);
+      const plan = { schemaVersion: "novel-stage-plan-v1", stages: [{ id: stageId, startChapter: 1, endChapter: 5, goal: "查清故障并承担后果" }] };
+      await engine.writeArtifact({ projectId: "book01", artifactType: "stage-plan", content: JSON.stringify(plan) });
+      const content = "文".repeat(2000), bodySha256 = sha256(content);
+      const checks = (names) => Object.fromEntries(names.map((name) => [name, "pass"]));
+      const committed = await finalizeChapterRecoverable(engine, {
+        projectId: "book01", expectedChapter: 1, title: "线索", content, summary: "故障的线索", requestId: "protected-stage-ch1", writerSessionId: "synthetic-stage-writer",
+        audit: { decision: "pass", checks: checks(LOGIC_AUDIT_CATEGORIES), issues: [] },
+        continuityReview: { reviewerRole: "continuity-auditor", reviewerSessionId: "synthetic-stage-continuity", bodySha256, conclusion: "pass", checks: checks(["facts", "timeline", "knowledgeBoundary", "stateContinuity", "causality", "promiseContinuity", "relationshipContinuity"]), issues: [] },
+        readerReview: { reviewerRole: "reader-editor", reviewerSessionId: "synthetic-stage-reader", bodySha256, conclusion: "pass", checks: checks(["readability", "pacing", "repetition", "genreExperience", "hookQuality", "characterAgency"]), issues: [] },
+        genreGate: { bodySha256, pass: true }, signature: { bodySha256, stageId, function: "调查与后果".repeat(100), solutionMode: "协作取证".repeat(100) }
+      });
+      assert.equal(committed.closure.status, "complete");
+      assert.equal(committed.integrity.status, "clean");
+      await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "2", content: "进一步调查，保留旧代价" });
+      const query = await engine.storyLedgerQuery({ projectId: "book01", ledgerType: "chapterSignature", chapter: 1, limit: 3 });
+      assert.equal(query.entries[0].stageId, stageId);
+      const protectedPaths = ["state.json", "story/ledgers/chapter-signatures.json", "blueprint/stage-plan.json", "chapters/chapter-0001.md", "chapters/meta/chapter-0001.json"];
+      const before = await Promise.all(protectedPaths.map(async (relative) => sha256(await fs.readFile(path.join(projectDir, relative), "utf8"))));
+      const prepared = await engine.prepareChapter("book01", { profile, role });
+      const after = await Promise.all(protectedPaths.map(async (relative) => sha256(await fs.readFile(path.join(projectDir, relative), "utf8"))));
+      assert.deepEqual(after, before, "Prepare must not modify persisted identity or source files");
+      const heading = "\n## 最近三章精简结构签名（chapter/bodySha256 为来源）\n";
+      const entries = JSON.parse(prepared.packet.split(heading)[1].split("\n")[0]);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].chapter, 1);
+      assert.equal(entries[0].bodySha256, committed.bodySha256);
+      assert.equal(prepared.stageContext.latestObservedStageId, stageId);
+      assert.equal(prepared.stageContext.plannedStage.id, stageId);
+      assert.ok(entries[0].function.length <= 80 && entries[0].solutionMode.length <= 80, "Narrative dimensions remain bounded");
+      assert.ok(entries[0].function.includes("资料已按快档上限截断"));
+      assert.ok(prepared.packetChars <= (role === "writer" ? 16000 : 6000));
+      child.diagnostic(JSON.stringify({ length, profile, role, signatureStageIdChars: entries[0].stageId.length, bodySha256: entries[0].bodySha256, packetChars: prepared.packetChars }));
+      assert.equal(entries[0].stageId, stageId, "Protected stage ID must preserve the official source identity");
+      if (length === 128) {
+        await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "2", content: "必需章纲".repeat(4000) });
+        await expectCode(engine.prepareChapter("book01", { profile, role }), "PREPARE_REQUIRED_CONTEXT_BUDGET_EXCEEDED");
+      }
+    });
+  }
+});
+
+test("M2 length guidance keeps resolved target and samples the last five committed Meta records", async (t) => {
+  const { engine } = await fixture(t, { requireChapterAudit: false, requireQualityGate: false });
+  for (let chapter = 1; chapter <= 10; chapter += 1) {
+    await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: String(chapter), content: "调查与后果" });
+    const prepared = await engine.prepareChapter("book01");
+    assert.equal(prepared.lengthGuidance.targetMinHanChars, 30);
+    assert.equal(prepared.lengthGuidance.configRevision, 1);
+    await engine.commitChapter({ projectId: "book01", expectedChapter: chapter, title: "调查", content: bodyOf(40 - chapter * 2), summary: "真实合成章", requestId: `m2-${chapter}` });
+  }
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "11", content: "处理后果" });
+  const prepared = await engine.prepareChapter("book01");
+  assert.deepEqual(prepared.lengthGuidance.samples.map((s) => s.chapter), [6, 7, 8, 9, 10]);
+  assert.equal(prepared.lengthGuidance.metrics.netChangeHanChars, -8);
+  assert.equal(prepared.lengthGuidance.metrics.consecutiveBelowTarget, 5);
+  assert.ok(prepared.lengthGuidance.samples.every((s) => /^[a-f0-9]{64}$/.test(s.bodySha256)));
+  assert.ok(prepared.lengthGuidance.warnings.includes("RECENT_CHAPTER_LENGTH_DECLINING"));
+  assert.ok(prepared.lengthGuidance.warnings.includes("RECENT_CHAPTERS_PERSISTENTLY_BELOW_PREFERRED_TARGET"));
+});
+
+test("M2 Writer and Reader receive three complete bounded signatures with source hashes", async (t) => {
+  const { engine } = await fixture(t, { requireChapterAudit: false, requireQualityGate: false });
+  for (let chapter = 1; chapter <= 3; chapter += 1) {
+    const body = bodyOf(30 + chapter);
+    await engine.commitChapter({ projectId: "book01", expectedChapter: chapter, title: "调查", content: body, summary: "调查", requestId: `sig-${chapter}` });
+    await engine.storyLedgerUpsert({ projectId: "book01", ledgerType: "chapterSignature", entry: { chapter, bodySha256: sha256(body), function: `FUNCTION-${chapter}`, solutionMode: `SOLUTION-${chapter}`, notes: "冗余".repeat(3000) } });
+  }
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "4", content: "承担选择后果" });
+  for (const profile of ["balanced-fast", "compact"]) for (const role of ["writer", "reader-editor"]) {
+    const prepared = await engine.prepareChapter("book01", { profile, role });
+    for (let chapter = 1; chapter <= 3; chapter += 1) {
+      assert.ok(prepared.packet.includes(`FUNCTION-${chapter}`));
+      assert.ok(prepared.packet.includes(`SOLUTION-${chapter}`));
+      assert.ok(prepared.packet.includes(sha256(bodyOf(30 + chapter))));
+    }
+    assert.ok(prepared.packet.length <= (role === "writer" ? 16000 : 6000));
+  }
+});
+
+test("M2 Prepare invalidates independent-engine ledger, dynamic state and memory writes", async (t) => {
+  const { engine, root } = await fixture(t);
+  const committed = await commitOne(engine);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "2", content: "处理债务" });
+  const other = new NovelEngine({ ...engine.config, projectsRoot: root });
+  let previous = await engine.prepareChapter("book01", { role: "continuity-auditor" });
+  const mutations = [
+    () => other.storyLedgerUpsert({ projectId: "book01", ledgerType: "promise", entry: { id: "debt", sourceChapter: 1, bodySha256: committed.bodySha256, promise: "PROMISE-NEW", status: "open" } }),
+    () => other.dynamicStateUpdate({ projectId: "book01", chapter: 1, bodySha256: committed.bodySha256, characters: [{ characterId: "hero", description: "DYNAMIC-NEW" }] }),
+    () => other.memoryRecord({ projectId: "book01", chapter: 1, bodySha256: committed.bodySha256, records: [{ id: "debt-memory", tier: "short", text: "处理债务 MEMORY-NEW", importance: 1 }] })
+  ];
+  for (const mutate of mutations) {
+    await mutate();
+    const current = await engine.prepareChapter("book01");
+    assert.notEqual(current.contextSnapshot.key, previous.contextSnapshot.key);
+    assert.equal(current.contextSnapshot.reused, false);
+    previous = current;
+  }
+  const full = await engine.prepareChapter("book01", { profile: "full" });
+  assert.ok(full.packet.includes("PROMISE-NEW"));
+  assert.ok(full.packet.includes("DYNAMIC-NEW"));
+  assert.ok(full.packet.includes("MEMORY-NEW"));
+});
+
+test("M2 stage plan validates before artifact history/state writes and distinguishes planned from observed", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const committed = await commitOne(engine);
+  await engine.storyLedgerUpsert({ projectId: "book01", ledgerType: "chapterSignature", entry: { chapter: 1, bodySha256: committed.bodySha256, function: "investigate", stageId: "village" } });
+  await engine.storyLedgerUpsert({ projectId: "book01", ledgerType: "promise", entry: { id: "debt", sourceChapter: 1, bodySha256: committed.bodySha256, promise: "OLD-DEBT", status: "open" } });
+  const plan = { schemaVersion: "novel-stage-plan-v1", stages: [{ id: "village", startChapter: 1, endChapter: 1, goal: "查清故障", costs: ["旧债不能清零"], carryForwardPromiseIds: ["debt"], nextStageId: "city", bridgeToNext: { condition: "证据指向城市", foreshadowingIds: ["future-clue"] } }, { id: "city", startChapter: 2, endChapter: 8, goal: "组织协作" }] };
+  const saved = await engine.writeArtifact({ projectId: "book01", artifactType: "stage-plan", content: JSON.stringify(plan) });
+  const beforeState = await fs.readFile(path.join(projectDir, "state.json"), "utf8");
+  const before = await engine.readArtifact({ projectId: "book01", artifactType: "stage-plan" });
+  for (const invalid of ["{", JSON.stringify({ ...plan, schemaVersion: "wrong" }), JSON.stringify({ ...plan, stages: [plan.stages[0], { ...plan.stages[1], startChapter: 1 }] }), JSON.stringify({ ...plan, stages: [{ ...plan.stages[0], nextStageId: "missing" }] }), JSON.stringify({ ...plan, stages: [{ ...plan.stages[0], costs: [42] }] })]) {
+    await expectCode(engine.writeArtifact({ projectId: "book01", artifactType: "stage-plan", content: invalid }), "INVALID_STAGE_PLAN");
+    assert.equal(await fs.readFile(path.join(projectDir, "state.json"), "utf8"), beforeState);
+    assert.equal((await engine.readArtifact({ projectId: "book01", artifactType: "stage-plan" })).content, before.content);
+  }
+  assert.equal(await fs.access(path.join(projectDir, "versions/artifacts/stage-plan-default")).then(() => true).catch(() => false), false);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "2", content: "承担旧债" });
+  for (const role of ["writer", "continuity-auditor", "reader-editor"]) {
+    const prepared = await engine.prepareChapter("book01", { role });
+    assert.equal(prepared.stageContext.plannedStage.id, "city");
+    assert.equal(prepared.stageContext.latestObservedStageId, "village");
+    assert.equal(prepared.stageContext.planSha256, saved.sha256);
+    assert.ok(prepared.stageContext.missingEvidenceIds.foreshadowing.includes("future-clue"));
+    assert.ok(prepared.packet.includes(saved.sha256));
+    assert.ok(prepared.packet.includes("debt"));
+    assert.ok(prepared.packet.includes(committed.bodySha256));
+    assert.ok(prepared.packet.includes("future-clue"));
+  }
+});
+
+test("M2 Prepare retries source changes only once and reports required packet overflow", async (t) => {
+  const { engine } = await fixture(t);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "本章计划" });
+  const build = engine._prepareLogicAudit.bind(engine);
+  let assemblies = 0;
+  engine._prepareLogicAudit = async (args) => {
+    const audit = await build(args);
+    assemblies += 1;
+    await engine.writeArtifact({ projectId: "book01", artifactType: "story-engine", content: `中途变化-${assemblies}` });
+    return audit;
+  };
+  await expectCode(engine.prepareChapter("book01"), "PREPARE_CONTEXT_CHANGED");
+  assert.equal(assemblies, 2);
+  engine._prepareLogicAudit = build;
+  const clean = await engine.prepareChapter("book01");
+  assert.equal(clean.stageContext, null);
+  assert.equal(clean.lengthGuidance.metrics.meanHanChars, null);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "本章必要计划".repeat(4000) });
+  await expectCode(engine.prepareChapter("book01"), "PREPARE_REQUIRED_CONTEXT_BUDGET_EXCEEDED");
+});
+
+test("M2 optional stage plan works before the first commit and malformed external JSON is explicit", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "本章计划" });
+  const before = await engine.prepareChapter("book01");
+  const plan = { schemaVersion: "novel-stage-plan-v1", stages: [{ id: "local", startChapter: 1, endChapter: 5, goal: "理解故障", foreshadowingIds: ["future"] }] };
+  await engine.writeArtifact({ projectId: "book01", artifactType: "stage-plan", content: JSON.stringify(plan) });
+  const current = await engine.prepareChapter("book01");
+  assert.notEqual(current.contextSnapshot.key, before.contextSnapshot.key);
+  assert.equal(current.stageContext.latestObservedStageId, null);
+  assert.deepEqual(current.stageContext.missingEvidenceIds.foreshadowing, ["future"]);
+  const ledger = await readLedger(projectDir, "foreshadowing.json");
+  assert.equal(ledger.entries.length, 0);
+  await fs.writeFile(path.join(projectDir, "blueprint/stage-plan.json"), "{", "utf8");
+  await expectCode(engine.prepareChapter("book01"), "INVALID_STAGE_PLAN");
+  await expectCode(engine.readArtifact({ projectId: "book01", artifactType: "stage-plan" }), "INVALID_STAGE_PLAN");
+});
+
+test("M2 Prepare does not cache stale config or outline in the recovery-to-fingerprint gap", async (t) => {
+  const { engine } = await fixture(t);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "OLD-OUTLINE" });
+  const fingerprint = engine._prepareDependencyFingerprint.bind(engine);
+  let changed = false;
+  engine._prepareDependencyFingerprint = async (...args) => {
+    if (!changed) {
+      changed = true;
+      await engine.configureProject({ projectId: "book01", expectedRevision: 1, writingContract: { minHanChars: 20, targetMinHanChars: 35, targetMaxHanChars: 45 } });
+      await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "NEW-OUTLINE" });
+    }
+    return fingerprint(...args);
+  };
+  const prepared = await engine.prepareChapter("book01");
+  assert.equal(prepared.lengthGuidance.targetMinHanChars, 35);
+  assert.ok(prepared.packet.includes("NEW-OUTLINE"));
+  assert.equal(prepared.packet.includes("OLD-OUTLINE"), false);
+  assert.equal(prepared.contextSnapshot.assemblyAttempts, 2);
+});
+
+test("M2 three prefetched role packets share one assembly and expiry is truthful", async (t) => {
+  const { engine, root } = await fixture(t);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "调查" });
+  let assemblies = 0, recoveries = 0;
+  const build = engine._prepareLogicAudit.bind(engine), recover = engine.recoverProjectForRead.bind(engine);
+  engine._prepareLogicAudit = async (args) => { assemblies += 1; return build(args); };
+  engine.recoverProjectForRead = async (args) => { recoveries += 1; return recover(args); };
+  const packets = [];
+  const evidenceDir = path.join(root, "evidence", "chapter-1");
+  await fs.mkdir(evidenceDir, { recursive: true });
+  for (const role of ["writer", "continuity-auditor", "reader-editor"]) {
+    const actualResponse = await engine.prepareChapter("book01", { role });
+    const evidencePath = path.join(evidenceDir, `prepare-${role}.json`);
+    await fs.writeFile(evidencePath, JSON.stringify(actualResponse), "utf8");
+    const saved = JSON.parse(await fs.readFile(evidencePath, "utf8"));
+    assert.equal(saved.packetSha256, sha256(saved.packet));
+    packets.push(saved);
+  }
+  assert.deepEqual(packets.map((p) => p.contextSnapshot.reused), [false, true, true]);
+  assert.equal(new Set(packets.map((p) => p.contextSnapshot.key)).size, 1);
+  assert.equal(assemblies, 1);
+  assert.equal(recoveries, 3);
+  t.diagnostic(JSON.stringify({ packets: packets.map((p) => ({ role: p.role, chars: p.packetChars, reused: p.contextSnapshot.reused })), assemblies, recoveries }));
+  engine.prepareSnapshotCache.get(packets[0].contextSnapshot.key).createdAt = 0;
+  const expired = await engine.prepareChapter("book01", { role: "reader-editor" });
+  assert.equal(expired.contextSnapshot.key, packets[0].contextSnapshot.key);
+  assert.equal(expired.contextSnapshot.reused, false);
+  assert.equal(assemblies, 2);
+});
+
+test("M2 simultaneous cold roles share in-flight assembly rather than duplicating reads", async (t) => {
+  const { engine } = await fixture(t);
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "调查" });
+  const build = engine._prepareLogicAudit.bind(engine);
+  let assemblies = 0;
+  engine._prepareLogicAudit = async (args) => {
+    assemblies += 1;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return build(args);
+  };
+  const prepared = await Promise.all(["writer", "continuity-auditor", "reader-editor"].map((role) => engine.prepareChapter("book01", { role })));
+  assert.equal(assemblies, 1);
+  assert.equal(new Set(prepared.map((p) => p.contextSnapshot.key)).size, 1);
+  assert.equal(prepared.filter((p) => p.contextSnapshot.reused).length, 2);
+});
+
+test("M2 future and stale signatures are not represented as committed history", async (t) => {
+  const { engine } = await fixture(t);
+  await engine.storyLedgerUpsert({ projectId: "book01", ledgerType: "chapterSignature", entry: { chapter: 9, bodySha256: "f".repeat(64), function: "FUTURE-SENTINEL" } });
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "1", content: "调查" });
+  assert.equal((await engine.prepareChapter("book01")).packet.includes("FUTURE-SENTINEL"), false);
+  const committed = await commitOne(engine);
+  await engine.storyLedgerUpsert({ projectId: "book01", ledgerType: "chapterSignature", entry: { chapter: 1, bodySha256: committed.bodySha256, function: "OLD-SENTINEL" } });
+  const revised = bodyOf(32, "改");
+  await approve(engine, 1, revised, "m2-signature-revision");
+  await engine.reviseChapter({ projectId: "book01", chapter: 1, content: revised, summary: "修订", expectedBodySha256: committed.bodySha256, expectedRevision: 1, requestId: "m2-signature-revision" });
+  await engine.writeArtifact({ projectId: "book01", artifactType: "chapter-outline", key: "2", content: "处理后果" });
+  const prepared = await engine.prepareChapter("book01");
+  assert.equal(prepared.packet.includes("OLD-SENTINEL"), false);
+  assert.equal(prepared.packet.includes("FUTURE-SENTINEL"), false);
+  assert.equal(prepared.packetDiagnostics.signatureSourceWarnings[0].reason, "missing-or-stale-committed-meta");
+});
 
 function passChecks() {
   return Object.fromEntries(LOGIC_AUDIT_CATEGORIES.map((category) => [category, { status: "pass", evidence: "verified" }]));
@@ -376,7 +635,8 @@ test("project locks wait for short contention instead of failing immediately", a
 
 test("balanced-fast prepare reuses one snapshot and enforces role packet caps", async (t) => {
   const { engine, projectDir } = await fixture(t);
-  await fs.writeFile(path.join(projectDir, "outlines", "chapter-0001.md"), `第一章大纲\n${"推进情节。".repeat(1200)}`, "utf8");
+  // Stress optional material; oversized required outlines now fail explicitly instead of being tail-clipped.
+  await fs.writeFile(path.join(projectDir, "outlines", "chapter-0001.md"), `第一章大纲\n${"推进情节。".repeat(300)}`, "utf8");
   await fs.writeFile(path.join(projectDir, "blueprint", "story-engine.md"), "故事发动机。".repeat(1200), "utf8");
   await fs.writeFile(path.join(projectDir, "blueprint", "world-rules.md"), "世界规则。".repeat(1200), "utf8");
   await fs.writeFile(path.join(projectDir, "blueprint", "characters.md"), "人物设定。".repeat(1200), "utf8");

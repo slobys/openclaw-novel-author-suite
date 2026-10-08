@@ -45,6 +45,100 @@ const BALANCED_FAST_PACKET_LIMITS = Object.freeze({
 });
 const PREPARE_SNAPSHOT_TTL_MS = 120000;
 
+function normalizeStagePlan(content) {
+  try {
+    const plan = JSON.parse(content);
+    if (!plan || Array.isArray(plan) || plan.schemaVersion !== "novel-stage-plan-v1" || !Array.isArray(plan.stages) || plan.stages.length > 50) throw new Error("Expected novel-stage-plan-v1 with at most 50 stages.");
+    const narrativeFields = ["goal", "worldExpansion"];
+    const narrativeArrays = ["growthDimensions", "newRules", "obstacles", "costs"];
+    const idArrays = ["foreshadowingIds", "carryForwardPromiseIds", "carryForwardRelationshipIds"];
+    const allowed = new Set(["id", "startChapter", "endChapter", ...narrativeFields, ...narrativeArrays, ...idArrays, "nextStageId", "bridgeToNext"]);
+    const text = (value, label, required = false) => {
+      if (typeof value !== "string" || value.length > 1000 || (required && !value.trim())) throw new Error(`${label} must be a bounded string.`);
+      return value.trim();
+    };
+    const list = (value, label, ids = false) => {
+      if (!Array.isArray(value) || value.length > 12) throw new Error(`${label} must contain at most 12 strings.`);
+      return [...new Set(value.map((v) => ids ? safeKey(v, label) : text(v, label, true)))];
+    };
+    const stages = plan.stages.map((stage) => {
+      if (!stage || Array.isArray(stage) || typeof stage !== "object" || Object.keys(stage).some((key) => !allowed.has(key))) throw new Error("Invalid stage fields.");
+      if (!Number.isInteger(stage.startChapter) || !Number.isInteger(stage.endChapter)) throw new Error("Chapter ranges must be integers.");
+      const result = { id: safeKey(stage.id, "stage id"), startChapter: parseChapter(stage.startChapter), endChapter: parseChapter(stage.endChapter), goal: text(stage.goal, "goal", true) };
+      if (result.endChapter < result.startChapter) throw new Error("endChapter must not precede startChapter.");
+      for (const key of narrativeFields.filter((key) => key !== "goal")) if (stage[key] !== undefined) result[key] = text(stage[key], key);
+      for (const key of narrativeArrays) if (stage[key] !== undefined) result[key] = list(stage[key], key);
+      for (const key of idArrays) if (stage[key] !== undefined) result[key] = list(stage[key], key, true);
+      if (stage.nextStageId !== undefined) result.nextStageId = safeKey(stage.nextStageId, "next stage id");
+      if (stage.bridgeToNext !== undefined) {
+        const bridge = stage.bridgeToNext;
+        if (!bridge || Array.isArray(bridge) || typeof bridge !== "object" || Object.keys(bridge).some((key) => !["condition", "foreshadowingIds", "promiseIds"].includes(key))) throw new Error("Invalid bridge fields.");
+        result.bridgeToNext = { condition: text(bridge.condition, "bridge condition", true) };
+        for (const key of ["foreshadowingIds", "promiseIds"]) if (bridge[key] !== undefined) result.bridgeToNext[key] = list(bridge[key], key, true);
+      }
+      return result;
+    }).sort((a, b) => a.startChapter - b.startChapter);
+    if (new Set(stages.map((s) => s.id)).size !== stages.length) throw new Error("Stage IDs must be unique.");
+    for (let i = 0; i < stages.length; i += 1) {
+      if (i && stages[i].startChapter <= stages[i - 1].endChapter) throw new Error("Stage ranges overlap.");
+      if (stages[i].nextStageId) {
+        const next = stages.find((s) => s.id === stages[i].nextStageId);
+        if (!next || next.startChapter <= stages[i].endChapter) throw new Error("nextStageId must identify a later stage.");
+      }
+    }
+    if (Object.keys(plan).some((key) => !["schemaVersion", "stages"].includes(key))) throw new Error("Invalid plan fields.");
+    return { schemaVersion: "novel-stage-plan-v1", stages };
+  } catch (error) {
+    throw codedError("INVALID_STAGE_PLAN", "Invalid stage-plan JSON or structure.", { reason: error.message });
+  }
+}
+
+function compactSignatures(entries) {
+  const fields = ["function", "chapterFunction", "openingMode", "conflictMode", "solutionMode", "emotionalTurn", "hookType", "irreversibleChange", "callbackReason"];
+  return entries.slice(0, 3).map((entry) => {
+    const result = { chapter: entry.chapter, bodySha256: entry.bodySha256 };
+    // Stage identity, like chapter/bodySha256, is protected rather than narrative prose.
+    if (entry.stageId !== undefined) result.stageId = entry.stageId;
+    for (const field of fields) if (entry[field] !== undefined) result[field] = promptClip(typeof entry[field] === "string" ? entry[field] : JSON.stringify(entry[field]), 80);
+    return result;
+  });
+}
+
+function stagePacket(context, role) {
+  if (!context) return null;
+  const project = (stage) => {
+    if (!stage) return null;
+    const result = { id: stage.id, startChapter: stage.startChapter, endChapter: stage.endChapter, goal: promptClip(stage.goal, 180) };
+    const fields = role === "continuity-auditor" ? ["costs", "bridgeToNext"] : role === "reader-editor" ? ["growthDimensions", "costs", "worldExpansion"] : ["growthDimensions", "obstacles", "costs", "newRules", "worldExpansion", "bridgeToNext"];
+    for (const key of fields) if (stage[key] !== undefined) result[key] = key === "bridgeToNext" ? { ...stage[key], condition: promptClip(stage[key].condition, 180) } : promptClip(stage[key], 180);
+    return result;
+  };
+  return { planPath: context.planPath, planSha256: context.planSha256, interpretation: "planned ranges are not observed growth or bridge completion", plannedStage: project(context.plannedStage), nextStage: project(context.nextStage), previousStage: project(context.previousStage), latestObservedStageId: context.latestObservedStageId, observedSource: context.observedSource, evidence: context.evidence, missingEvidenceIds: context.missingEvidenceIds, unresolvedEvidenceIds: context.unresolvedEvidenceIds };
+}
+
+// Required sections are never tail-clipped. Optional sections consume only the remaining budget.
+function boundedRolePacket(title, required, optional, limit) {
+  let packet = [title, ...required.map(([label, value]) => `\n## ${label}\n${typeof value === "string" ? value : JSON.stringify(value)}`)].join("\n");
+  if (packet.length > limit) throw codedError("PREPARE_REQUIRED_CONTEXT_BUDGET_EXCEEDED", "Required outline/specification/audit/stage evidence does not fit the role packet; use narrow queries or reduce planning prose.", { requiredChars: packet.length, limit });
+  const omittedSections = [];
+  let remaining = limit - packet.length - 180;
+  let sectionsLeft = optional.length;
+  for (const [label, value] of optional) {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    const header = `\n\n## ${label}\n`;
+    const budget = Math.max(0, Math.floor(remaining / sectionsLeft) - header.length);
+    sectionsLeft -= 1;
+    if (!text || budget < 60) { if (text) omittedSections.push(label); continue; }
+    const selected = promptClip(text, budget);
+    if (selected !== text) omittedSections.push(label);
+    packet += header + selected;
+    remaining -= header.length + selected.length;
+  }
+  const omissionNote = "\n[部分非保护资料按预算省略；packetDiagnostics列出分节，可用现有窄查询补取。]";
+  if (omittedSections.length && packet.length + omissionNote.length <= limit) packet += omissionNote;
+  return { packet, omittedSections };
+}
+
 function tailClip(value, maxChars) {
   const text = String(value ?? "");
   if (text.length <= maxChars) return text;
@@ -130,6 +224,7 @@ const ARTIFACTS = {
   "master-outline": () => "blueprint/master-outline.md",
   "writing-rules": () => "blueprint/writing-rules.md",
   "genre-profile": () => "blueprint/genre-profile.json",
+  "stage-plan": () => "blueprint/stage-plan.json",
   "volume-outline": (key) => `blueprint/volume-outlines/${safeKey(String(key), "volume key")}.md`,
   "chapter-outline": (key) => `outlines/chapter-${padChapter(parseChapter(key))}.md`
 };
@@ -1615,6 +1710,7 @@ export class NovelEngine {
     const projectDir = await this.requireProject(projectId);
     if (typeof content !== "string" || !content.trim()) throw codedError("ARTIFACT_CONTENT_REQUIRED", "Artifact content is required.");
     if (content.length > this.config.maxArtifactChars) throw codedError("ARTIFACT_TOO_LARGE", "Artifact content exceeds configured limit.", { actualChars: content.length, maxChars: this.config.maxArtifactChars });
+    const normalized = artifactType === "stage-plan" ? `${JSON.stringify(normalizeStagePlan(content), null, 2)}\n` : `${content.trim()}\n`;
     return this.withProjectLock(projectDir, async () => {
       await this.recoverPendingTransactionsUnlocked(projectDir);
       const artifactPath = this.artifactPath(projectDir, artifactType, key);
@@ -1628,10 +1724,9 @@ export class NovelEngine {
         const versionPath = resolveInside(projectDir, `versions/artifacts/${versionKey}/${nowIso().replace(/[:.]/g, "-")}-${currentSha256.slice(0, 12)}.md`);
         await atomicWrite(versionPath, current);
       }
-      const normalized = `${content.trim()}\n`;
       await atomicWrite(artifactPath, normalized);
       const state = await this.reconcileStateUnlocked(projectDir);
-      if (["creative-brief", "story-engine", "novelty-report", "premise", "world", "world-rules", "characters", "master-outline", "writing-rules", "genre-profile", "volume-outline", "chapter-outline"].includes(artifactType)) state.phase = "planning";
+      if (["creative-brief", "story-engine", "novelty-report", "premise", "world", "world-rules", "characters", "master-outline", "writing-rules", "genre-profile", "stage-plan", "volume-outline", "chapter-outline"].includes(artifactType)) state.phase = "planning";
       state.revision = Number(state.revision ?? 0) + 1;
       state.updatedAt = nowIso();
       await writeJson(resolveInside(projectDir, "state.json"), state);
@@ -1644,6 +1739,7 @@ export class NovelEngine {
     const artifactPath = this.artifactPath(projectDir, artifactType, key);
     if (!(await exists(artifactPath))) return { found: false, artifactType, key: key ?? null };
     const content = await fs.readFile(artifactPath, "utf8");
+    if (artifactType === "stage-plan") normalizeStagePlan(content);
     return { found: true, artifactType, key: key ?? null, content, sha256: sha256(content) };
   }
 
@@ -2109,6 +2205,10 @@ export class NovelEngine {
     }
     const projectDir = await this.requireProject(projectId);
     const { state, projectConfig, recoveredTransactions } = await this.recoverProjectForRead(projectDir);
+    return this._prepareLogicAudit({ projectId, chapter, profile, projectDir, state, projectConfig, recoveredTransactions });
+  }
+
+  async _prepareLogicAudit({ projectId, chapter, profile, projectDir, state, projectConfig, recoveredTransactions }) {
     const current = chapter === undefined || chapter === null ? state.nextChapter : parseChapter(chapter);
     const fast = profile === "balanced-fast";
     const recentWindow = fast ? 2 : 5;
@@ -2281,7 +2381,108 @@ export class NovelEngine {
     });
   }
 
-  async prepareChapter(projectId, { profile = "balanced-fast", role = "writer" } = {}) {
+  async _prepareDependencyFingerprint(projectDir, chapter, profile) {
+    const paths = ["project.json", "state.json", "project-config.json", `outlines/chapter-${padChapter(chapter)}.md`, "blueprint/creative-brief.md", "blueprint/story-engine.md", "blueprint/world-rules.md", "blueprint/characters.md", "blueprint/writing-rules.md", "blueprint/stage-plan.json", "story/causal-events.json", "story/foreshadowing.json", "story/dynamic/state.json", "story/memory/index.json", ...["promise", "relationship", "oppositionClock", "chapterSignature"].map((key) => LEDGER_FILES[key])];
+    if (profile !== "balanced-fast") paths.push("analysis/structure-fingerprint.md", "creative/idea-bank.json", "blueprint/novelty-report.md", "blueprint/premise.md", "blueprint/world.md", "blueprint/master-outline.md");
+    // Only explicit stage references and the bounded observed-signature window may add old Meta paths.
+    const rawPlan = await readTextOr(resolveInside(projectDir, "blueprint/stage-plan.json"), null);
+    if (rawPlan !== null) {
+      const plan = normalizeStagePlan(rawPlan);
+      const relevant = [plan.stages.find((s) => chapter >= s.startChapter && chapter <= s.endChapter), plan.stages.filter((s) => s.endChapter < chapter).at(-1)].filter(Boolean);
+      const refs = {
+        foreshadowing: new Set(relevant.flatMap((s) => [...(s.foreshadowingIds ?? []), ...(s.bridgeToNext?.foreshadowingIds ?? [])])),
+        promise: new Set(relevant.flatMap((s) => [...(s.carryForwardPromiseIds ?? []), ...(s.bridgeToNext?.promiseIds ?? [])])),
+        relationship: new Set(relevant.flatMap((s) => s.carryForwardRelationshipIds ?? []))
+      };
+      for (const [type, ids] of Object.entries(refs)) {
+        if (!ids.size) continue;
+        const ledger = await readJsonOr(resolveInside(projectDir, type === "foreshadowing" ? "story/foreshadowing.json" : LEDGER_FILES[type]), { entries: [] });
+        for (const entry of ledger.entries.filter((e) => ids.has(e.id))) {
+          const sourceChapter = type === "foreshadowing" ? entry.plantedChapter : entry.sourceChapter;
+          if (Number.isInteger(sourceChapter) && sourceChapter > 0) paths.push(`chapters/meta/chapter-${padChapter(sourceChapter)}.json`);
+          if (type === "foreshadowing" && Number.isInteger(entry.sourceChapter) && entry.sourceChapter > 0) paths.push(`chapters/meta/chapter-${padChapter(entry.sourceChapter)}.json`);
+        }
+      }
+    }
+    const signatureLedger = await readJsonOr(resolveInside(projectDir, LEDGER_FILES.chapterSignature), { entries: [] });
+    for (const entry of (chapter > 1 ? queryLedgerEntries("chapterSignature", signatureLedger.entries, { chapter: chapter - 1, limit: profile === "balanced-fast" ? 3 : 10 }) : [])) paths.push(`chapters/meta/chapter-${padChapter(entry.chapter)}.json`);
+    for (let number = Math.max(1, chapter - 5); number < chapter; number += 1) {
+      paths.push(`chapters/meta/chapter-${padChapter(number)}.json`, `summaries/chapter-${padChapter(number)}.json`, `continuity/deltas/chapter-${padChapter(number)}.json`);
+    }
+    if (chapter > 1) paths.push(`chapters/chapter-${padChapter(chapter - 1)}.md`, `story/closures/chapter-${padChapter(chapter - 1)}.json`);
+    const identities = await Promise.all([...new Set(paths)].map(async (relativePath) => {
+      try {
+        const stat = await fs.stat(resolveInside(projectDir, relativePath), { bigint: true });
+        return [relativePath, ...[stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String)];
+      } catch (error) { if (error.code === "ENOENT") return [relativePath, "missing"]; throw error; }
+    }));
+    return sha256(JSON.stringify(identities));
+  }
+
+  async _lengthGuidance(projectDir, chapter, projectConfig) {
+    const samples = [];
+    for (let number = Math.max(1, chapter - 5); number < chapter; number += 1) {
+      const meta = await readJsonOr(resolveInside(projectDir, `chapters/meta/chapter-${padChapter(number)}.json`), null);
+      if (meta && Number.isInteger(meta.hanChars) && meta.hanChars >= 0 && /^[a-f0-9]{64}$/i.test(meta.bodySha256 ?? "")) samples.push({ chapter: number, hanChars: meta.hanChars, bodySha256: meta.bodySha256, revision: meta.revision ?? null });
+    }
+    const { minHanChars, targetMinHanChars, targetMaxHanChars } = projectConfig.writingContract;
+    let consecutiveBelowTarget = 0;
+    for (let i = samples.length - 1; i >= 0 && samples[i].hanChars < targetMinHanChars; i -= 1) {
+      if (samples[i].chapter !== chapter - 1 - consecutiveBelowTarget) break;
+      consecutiveBelowTarget += 1;
+    }
+    const netChangeHanChars = samples.length > 1 ? samples.at(-1).hanChars - samples[0].hanChars : null;
+    const warnings = [];
+    if (consecutiveBelowTarget > 0) warnings.push("RECENT_CHAPTER_BELOW_PREFERRED_TARGET");
+    if (consecutiveBelowTarget >= 3) warnings.push("RECENT_CHAPTERS_PERSISTENTLY_BELOW_PREFERRED_TARGET");
+    if (samples.length >= 3 && netChangeHanChars <= -targetMinHanChars * 0.1 && samples.every((s, i) => !i || (s.chapter === samples[i - 1].chapter + 1 && s.hanChars < samples[i - 1].hanChars))) warnings.push("RECENT_CHAPTER_LENGTH_DECLINING");
+    return { metric: "engine-han-characters", configRevision: projectConfig.revision, hardMinimumHanChars: minHanChars, targetMinHanChars, targetMaxHanChars, targetIsHardGate: false, sampleSource: "committed-chapter-meta", samples, metrics: { sampleCount: samples.length, meanHanChars: samples.length ? samples.reduce((sum, s) => sum + s.hanChars, 0) / samples.length : null, netChangeHanChars, consecutiveBelowTarget }, warnings };
+  }
+
+  async _stageContext(projectDir, chapter, signatures) {
+    const planPath = "blueprint/stage-plan.json";
+    const raw = await readTextOr(resolveInside(projectDir, planPath), null);
+    if (raw === null) return null;
+    const plan = normalizeStagePlan(raw);
+    const plannedStage = plan.stages.find((s) => chapter >= s.startChapter && chapter <= s.endChapter) ?? null;
+    const nextStage = plannedStage?.nextStageId ? plan.stages.find((s) => s.id === plannedStage.nextStageId) : null;
+    const previousStage = plan.stages.filter((s) => s.endChapter < chapter).at(-1) ?? null;
+    let observedSource = null;
+    for (const sig of signatures) {
+      if (!sig.stageId || sig.chapter >= chapter) continue;
+      const meta = await readJsonOr(resolveInside(projectDir, `chapters/meta/chapter-${padChapter(sig.chapter)}.json`), null);
+      if (meta?.bodySha256 === sig.bodySha256) { observedSource = { chapter: sig.chapter, bodySha256: sig.bodySha256, stageId: sig.stageId }; break; }
+    }
+    const relevant = [plannedStage, previousStage].filter(Boolean);
+    const ids = {
+      foreshadowing: [...new Set(relevant.flatMap((s) => [...(s.foreshadowingIds ?? []), ...(s.bridgeToNext?.foreshadowingIds ?? [])]))],
+      promise: [...new Set(relevant.flatMap((s) => [...(s.carryForwardPromiseIds ?? []), ...(s.bridgeToNext?.promiseIds ?? [])]))],
+      relationship: [...new Set(relevant.flatMap((s) => s.carryForwardRelationshipIds ?? []))]
+    };
+    const evidence = {}, missingEvidenceIds = {}, unresolvedEvidenceIds = {};
+    for (const [type, refs] of Object.entries(ids)) {
+      const ledgerPath = type === "foreshadowing" ? "story/foreshadowing.json" : LEDGER_FILES[type];
+      const ledger = refs.length ? await readJsonOr(resolveInside(projectDir, ledgerPath), { entries: [] }) : { entries: [] };
+      evidence[type] = []; missingEvidenceIds[type] = []; unresolvedEvidenceIds[type] = [];
+      for (const id of refs) {
+        const entry = ledger.entries.find((e) => e.id === id);
+        if (!entry) { missingEvidenceIds[type].push(id); continue; }
+        const sourceChapter = type === "foreshadowing" ? entry.plantedChapter : entry.sourceChapter;
+        const bodySha256 = type === "foreshadowing" ? entry.plantedBodySha256 : entry.bodySha256;
+        const meta = sourceChapter ? await readJsonOr(resolveInside(projectDir, `chapters/meta/chapter-${padChapter(sourceChapter)}.json`), null) : null;
+        const latestMeta = type === "foreshadowing" && entry.sourceChapter ? await readJsonOr(resolveInside(projectDir, `chapters/meta/chapter-${padChapter(entry.sourceChapter)}.json`), null) : meta;
+        const latestBindingValid = type !== "foreshadowing" || (entry.sourceChapter < chapter && latestMeta?.bodySha256 === entry.bodySha256 && /^[a-f0-9]{64}$/i.test(entry.bodySha256 ?? ""));
+        const observed = sourceChapter < chapter && meta?.bodySha256 === bodySha256 && /^[a-f0-9]{64}$/i.test(bodySha256 ?? "") && latestBindingValid && !["planned", "unplanted"].includes(entry.status);
+        const record = { id, status: entry.status ?? null, evidenceState: observed ? "observed-hash-bound" : "unresolved", sourcePath: ledgerPath, sourceChapter: sourceChapter ?? null, bodySha256: bodySha256 ?? null, summary: promptClip(entry.promise ?? entry.notes ?? entry.summary ?? JSON.stringify(entry.dimensions ?? {}), 160) };
+        if (type === "foreshadowing") record.latestSource = { chapter: entry.sourceChapter ?? null, bodySha256: entry.bodySha256 ?? null };
+        evidence[type].push(record);
+        if (!observed) unresolvedEvidenceIds[type].push(id);
+      }
+    }
+    return { planPath, planSha256: sha256(raw), plannedStage, nextStage, previousStage, latestObservedStageId: observedSource?.stageId ?? null, observedSource, evidence, missingEvidenceIds, unresolvedEvidenceIds };
+  }
+
+  async prepareChapter(projectId, { profile = "balanced-fast", role = "writer", _attempt = 0 } = {}) {
     if (!new Set(["balanced-fast", "compact", "full"]).has(profile)) {
       throw codedError("INVALID_PREPARE_PROFILE", "profile must be balanced-fast, compact or full.", { profile });
     }
@@ -2295,145 +2496,137 @@ export class NovelEngine {
     const outlinePath = resolveInside(projectDir, `outlines/chapter-${padChapter(chapter)}.md`);
     if (!(await exists(outlinePath))) return { ready: false, reason: "missing_chapter_outline", chapter, requiredArtifact: { artifactType: "chapter-outline", key: String(chapter) } };
     const fast = profile === "balanced-fast";
-    const outlineText = await fs.readFile(outlinePath, "utf8");
-    const outlineStat = await fs.stat(outlinePath);
     const readOptional = async (relativePath, maxChars) => {
       const filePath = resolveInside(projectDir, relativePath);
       return (await exists(filePath)) ? clip(await fs.readFile(filePath, "utf8"), maxChars) : "";
     };
-    const snapshotKey = `${normalizeProjectId(projectId)}:${chapter}:${state.revision ?? 0}:${projectConfig.revision ?? 0}:${outlineStat.size}:${outlineStat.mtimeMs}`;
+    const dependencyFingerprint = await this._prepareDependencyFingerprint(projectDir, chapter, profile);
+    const [currentProject, currentState, currentConfig] = await Promise.all([
+      readJson(resolveInside(projectDir, "project.json")), readJson(resolveInside(projectDir, "state.json")), this.readProjectConfig(projectDir)
+    ]);
+    if (stableStringify(currentProject) !== stableStringify(project) || stableStringify(currentState) !== stableStringify(state) || stableStringify(currentConfig) !== stableStringify(projectConfig)) {
+      if (_attempt >= 1) throw codedError("PREPARE_CONTEXT_CHANGED", "Prepare header sources changed during both bounded attempts.", { chapter });
+      return this.prepareChapter(projectId, { profile, role, _attempt: _attempt + 1 });
+    }
+    const outlineText = await fs.readFile(outlinePath, "utf8");
+    const snapshotKey = `${normalizeProjectId(projectId)}:${chapter}:${profile}:${dependencyFingerprint}`;
     let snapshotReused = false;
     const cachedSnapshot = fast ? this.prepareSnapshotCache.get(snapshotKey) : null;
     const cacheFresh = cachedSnapshot && Date.now() - cachedSnapshot.createdAt <= PREPARE_SNAPSHOT_TTL_MS;
     if (cachedSnapshot && !cacheFresh) this.prepareSnapshotCache.delete(snapshotKey);
-    let context = cacheFresh ? cachedSnapshot.context : null;
+    let context = cacheFresh ? (cachedSnapshot.context ?? (cachedSnapshot.pending ? await cachedSnapshot.pending : null)) : null;
     if (context) snapshotReused = true;
     if (!context) {
-      const recent = [];
-      const recentWindow = fast ? 2 : 5;
-      for (let number = Math.max(1, chapter - recentWindow); number < chapter; number += 1) {
-        const summaryPath = resolveInside(projectDir, `summaries/chapter-${padChapter(number)}.json`);
-        const deltaPath = resolveInside(projectDir, `continuity/deltas/chapter-${padChapter(number)}.json`);
-        recent.push({ chapter: number, summary: (await exists(summaryPath)) ? await readJson(summaryPath) : null, continuityDelta: (await exists(deltaPath)) ? await readJson(deltaPath) : null });
-      }
-      let previousChapter = "";
-      if (chapter > 1) {
-        const previousPath = resolveInside(projectDir, `chapters/chapter-${padChapter(chapter - 1)}.md`);
-        if (await exists(previousPath)) {
-          const previousText = await fs.readFile(previousPath, "utf8");
-          previousChapter = fast ? tailClip(previousText, 2000) : clip(previousText, 7000);
+      const pending = (async () => {
+        const recent = [];
+        const recentWindow = fast ? 2 : 5;
+        for (let number = Math.max(1, chapter - recentWindow); number < chapter; number += 1) {
+          const summaryPath = resolveInside(projectDir, `summaries/chapter-${padChapter(number)}.json`);
+          const deltaPath = resolveInside(projectDir, `continuity/deltas/chapter-${padChapter(number)}.json`);
+          recent.push({ chapter: number, summary: (await exists(summaryPath)) ? await readJson(summaryPath) : null, continuityDelta: (await exists(deltaPath)) ? await readJson(deltaPath) : null });
         }
-      }
-      const ideaBank = fast ? { candidates: [], selectedId: null } : await readJsonOr(resolveInside(projectDir, "creative/idea-bank.json"), { candidates: [], selectedId: null });
-      const selectedIdea = (ideaBank.candidates ?? []).find((item) => item.id === ideaBank.selectedId) ?? null;
-      const logicAudit = await this.prepareLogicAudit({ projectId, chapter, profile });
-      const signatureLimit = fast ? 3 : 10;
-      const signatures = chapter > 1
-        ? await this.storyLedgerQuery({ projectId, ledgerType: "chapterSignature", chapter: chapter - 1, limit: signatureLimit })
-        : await this.storyLedgerQuery({ projectId, ledgerType: "chapterSignature", limit: signatureLimit });
-      const shortMemory = await this.memorySearch({ projectId, query: `${project.title} 第${chapter}章 ${outlineText}`, tiers: ["short"], chapterBefore: chapter, topK: fast ? 3 : 5 }).catch(() => ({ results: [] }));
-      const midMemory = await this.memorySearch({ projectId, query: `${project.title} ${project.genre} 主线 人物 关系 当前阶段`, tiers: ["mid"], chapterBefore: chapter, topK: fast ? 4 : 12 }).catch(() => ({ results: [] }));
-      const longMemory = await this.memorySearch({ projectId, query: outlineText, tiers: ["long"], chapterBefore: chapter, topK: fast ? 2 : 8 }).catch(() => ({ results: [] }));
-      context = {
-        project: { id: project.id, title: project.title, genre: project.genre, premise: project.premise },
-        projectConfig,
-        recoveredTransactions,
-        chapter,
-        chapterOutline: fast ? clip(outlineText, 2500) : outlineText,
-        structureFingerprint: fast ? "" : await readOptional("analysis/structure-fingerprint.md", 7000),
-        creativeBrief: await readOptional("blueprint/creative-brief.md", fast ? 1800 : 5000),
-        selectedIdea,
-        storyEngine: await readOptional("blueprint/story-engine.md", fast ? 2500 : 7000),
-        noveltyReport: fast ? "" : await readOptional("blueprint/novelty-report.md", 5000),
-        premise: fast ? "" : await readOptional("blueprint/premise.md", 5000),
-        world: fast ? "" : await readOptional("blueprint/world.md", 9000),
-        worldRules: await readOptional("blueprint/world-rules.md", fast ? 2500 : 9000),
-        characters: await readOptional("blueprint/characters.md", fast ? 3000 : 9000),
-        masterOutline: fast ? "" : await readOptional("blueprint/master-outline.md", 9000),
-        writingRules: await readOptional("blueprint/writing-rules.md", fast ? 1800 : 6000),
-        previousChapter,
-        recent,
-        causalEvents: logicAudit.causalEvents,
-        foreshadowing: logicAudit.foreshadowing,
-        promises: logicAudit.promises,
-        relationships: logicAudit.relationships,
-        oppositionClocks: logicAudit.oppositionClocks,
-        dynamicState: logicAudit.dynamicState,
-        memory: { short: shortMemory.results, mid: midMemory.results, long: longMemory.results },
-        recentSignatures: signatures.entries,
-        auditContract: logicAudit.auditContract,
-        auditRequired: projectConfig.quality.requireChapterAudit,
-        qualityGateRequired: projectConfig.quality.requireQualityGate
-      };
+        let previousChapter = "";
+        if (chapter > 1) {
+          const previousPath = resolveInside(projectDir, `chapters/chapter-${padChapter(chapter - 1)}.md`);
+          if (await exists(previousPath)) {
+            const previousText = await fs.readFile(previousPath, "utf8");
+            previousChapter = fast ? tailClip(previousText, 2000) : clip(previousText, 7000);
+          }
+        }
+        const ideaBank = fast ? { candidates: [], selectedId: null } : await readJsonOr(resolveInside(projectDir, "creative/idea-bank.json"), { candidates: [], selectedId: null });
+        const selectedIdea = (ideaBank.candidates ?? []).find((item) => item.id === ideaBank.selectedId) ?? null;
+        const logicAudit = await this._prepareLogicAudit({ projectId, chapter, profile, projectDir, state, projectConfig, recoveredTransactions });
+        const signatureLimit = fast ? 3 : 10;
+        const signatures = chapter > 1
+          ? await this.storyLedgerQuery({ projectId, ledgerType: "chapterSignature", chapter: chapter - 1, limit: signatureLimit })
+          : { entries: [] };
+        const validSignatures = [], signatureSourceWarnings = [];
+        for (const entry of signatures.entries) {
+          const meta = await readJsonOr(resolveInside(projectDir, `chapters/meta/chapter-${padChapter(entry.chapter)}.json`), null);
+          if (entry.chapter < chapter && meta?.bodySha256 === entry.bodySha256) validSignatures.push(entry);
+          else signatureSourceWarnings.push({ chapter: entry.chapter, bodySha256: entry.bodySha256, reason: "missing-or-stale-committed-meta" });
+        }
+        const shortMemory = await this.memorySearch({ projectId, query: `${project.title} 第${chapter}章 ${outlineText}`, tiers: ["short"], chapterBefore: chapter, topK: fast ? 3 : 5 }).catch(() => ({ results: [] }));
+        const midMemory = await this.memorySearch({ projectId, query: `${project.title} ${project.genre} 主线 人物 关系 当前阶段`, tiers: ["mid"], chapterBefore: chapter, topK: fast ? 4 : 12 }).catch(() => ({ results: [] }));
+        const longMemory = await this.memorySearch({ projectId, query: outlineText, tiers: ["long"], chapterBefore: chapter, topK: fast ? 2 : 8 }).catch(() => ({ results: [] }));
+        return {
+          project: { id: project.id, title: project.title, genre: project.genre, premise: project.premise },
+          projectConfig,
+          recoveredTransactions,
+          chapter,
+          chapterOutline: outlineText,
+          structureFingerprint: fast ? "" : await readOptional("analysis/structure-fingerprint.md", 7000),
+          creativeBrief: await readOptional("blueprint/creative-brief.md", fast ? 1800 : 5000),
+          selectedIdea,
+          storyEngine: fast ? logicAudit.storyEngine : await readOptional("blueprint/story-engine.md", 7000),
+          noveltyReport: fast ? "" : await readOptional("blueprint/novelty-report.md", 5000),
+          premise: fast ? "" : await readOptional("blueprint/premise.md", 5000),
+          world: fast ? "" : await readOptional("blueprint/world.md", 9000),
+          worldRules: fast ? logicAudit.worldRules : await readOptional("blueprint/world-rules.md", 9000),
+          characters: await readOptional("blueprint/characters.md", fast ? 3000 : 9000),
+          masterOutline: fast ? "" : await readOptional("blueprint/master-outline.md", 9000),
+          writingRules: await readOptional("blueprint/writing-rules.md", fast ? 1800 : 6000),
+          previousChapter,
+          recent,
+          causalEvents: logicAudit.causalEvents,
+          foreshadowing: logicAudit.foreshadowing,
+          promises: logicAudit.promises,
+          relationships: logicAudit.relationships,
+          oppositionClocks: logicAudit.oppositionClocks,
+          dynamicState: logicAudit.dynamicState,
+          memory: { short: shortMemory.results, mid: midMemory.results, long: longMemory.results },
+          recentSignatures: validSignatures,
+          signatureSourceWarnings,
+          lengthGuidance: await this._lengthGuidance(projectDir, chapter, projectConfig),
+          stageContext: await this._stageContext(projectDir, chapter, validSignatures),
+          auditContract: logicAudit.auditContract,
+          auditRequired: projectConfig.quality.requireChapterAudit,
+          qualityGateRequired: projectConfig.quality.requireQualityGate
+        };
+      })();
+      if (fast) this.prepareSnapshotCache.set(snapshotKey, { pending, createdAt: Date.now() });
+      try { context = await pending; }
+      catch (error) { if (fast) this.prepareSnapshotCache.delete(snapshotKey); throw error; }
       if (fast) {
         this.prepareSnapshotCache.set(snapshotKey, { context, createdAt: Date.now() });
         while (this.prepareSnapshotCache.size > 20) this.prepareSnapshotCache.delete(this.prepareSnapshotCache.keys().next().value);
       }
     }
+    if (dependencyFingerprint !== await this._prepareDependencyFingerprint(projectDir, chapter, profile)) {
+      this.prepareSnapshotCache.delete(snapshotKey);
+      if (_attempt >= 1) throw codedError("PREPARE_CONTEXT_CHANGED", "Prepare sources changed during both bounded assembly attempts.", { chapter });
+      return this.prepareChapter(projectId, { profile, role, _attempt: _attempt + 1 });
+    }
     const dynamicState = context.dynamicState;
     const recent = context.recent;
-    const compactSections = {
-      writer: [
-        `# 《${project.title}》第${chapter}章 Writer 精简资料包`,
-        "\n## 本章篇幅与类型规格\n", JSON.stringify({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, null, 2),
-        "\n## 本章大纲\n", context.chapterOutline,
-        "\n## 创作发动机与写作规则\n", context.storyEngine, context.writingRules,
-        "\n## 世界硬规则与当前人物\n", context.worldRules, context.characters,
-        "\n## 上一章末尾\n", context.previousChapter,
-        "\n## 最近摘要与当前状态\n", JSON.stringify({ recent, dynamicState }, null, 2),
-        "\n## 本章相关记忆与长线任务\n", JSON.stringify({ memory: context.memory, causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, null, 2),
-        "\n## Writer 随稿审计契约\n", JSON.stringify(context.auditContract, null, 2)
-      ],
-      "continuity-auditor": [
-        `# 《${project.title}》第${chapter}章 Continuity Auditor 精简资料包`,
-        "\n## 本章大纲与上一章末尾\n", context.chapterOutline, context.previousChapter,
-        "\n## 世界硬规则与当前状态\n", context.worldRules, JSON.stringify(dynamicState, null, 2),
-        "\n## 最近连续性变化\n", JSON.stringify(recent, null, 2),
-        "\n## 因果、伏笔、承诺、关系与对手压力\n", JSON.stringify({ causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, null, 2)
-      ],
-      "reader-editor": [
-        `# 《${project.title}》第${chapter}章 Reader Editor 精简资料包`,
-        "\n## 本章类型体验与篇幅规格\n", JSON.stringify({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, null, 2),
-        "\n## 本章大纲\n", context.chapterOutline,
-        "\n## 创作核心与写作规则\n", context.creativeBrief, context.storyEngine, context.writingRules,
-        "\n## 最近章节节奏指纹\n", JSON.stringify(context.recentSignatures, null, 2)
-      ]
-    };
-    if (fast) {
-      const fastSections = {
-        writer: [
-          `# 《${project.title}》第${chapter}章 Writer Balanced-Fast 资料包`,
-          "\n## 本章规格\n", promptClip({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, 1400),
-          "\n## 本章大纲\n", promptClip(context.chapterOutline, 2500),
-          "\n## 17 类审计契约（通过项只写 pass，只有问题项写证据）\n", promptClip(context.auditContract, 1400),
-          "\n## 创作发动机与写作规则\n", promptClip(`${context.storyEngine}\n${context.writingRules}`, 3000),
-          "\n## 世界硬规则与人物\n", promptClip(`${context.worldRules}\n${context.characters}`, 3500),
-          "\n## 上一章末尾\n", promptClip(context.previousChapter, 2000),
-          "\n## 最近状态、记忆与本章长线任务\n", promptClip({ recent, dynamicState, memory: context.memory, causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, 2600)
-        ],
-        "continuity-auditor": [
-          `# 《${project.title}》第${chapter}章 Continuity Auditor Balanced-Fast 资料包`,
-          "\n## 本章大纲与上一章末尾\n", promptClip(`${context.chapterOutline}\n${context.previousChapter}`, 3000),
-          "\n## 世界规则与当前状态\n", promptClip({ worldRules: context.worldRules, dynamicState }, 2200),
-          "\n## 最近变化与相关长线任务\n", promptClip({ recent, causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, 2200)
-        ],
-        "reader-editor": [
-          `# 《${project.title}》第${chapter}章 Reader Editor Balanced-Fast 资料包`,
-          "\n## 类型体验与篇幅规格\n", promptClip({ writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile }, 1400),
-          "\n## 本章大纲\n", promptClip(context.chapterOutline, 2000),
-          "\n## 创作核心与写作规则\n", promptClip(`${context.creativeBrief}\n${context.storyEngine}\n${context.writingRules}`, 1800),
-          "\n## 最近节奏指纹\n", promptClip(context.recentSignatures, 700)
-        ]
-      };
-      const packet = promptClip(fastSections[role].join("\n"), BALANCED_FAST_PACKET_LIMITS[role]);
-      return { ready: true, chapter, profile, role, packet, packetChars: packet.length, packetSha256: sha256(packet), contextSnapshot: { key: snapshotKey, reused: snapshotReused } };
-    }
-    if (profile === "compact") {
-      return { ready: true, chapter, profile, role, packet: compactSections[role].join("\n") };
+    if (profile !== "full") {
+      const lengthSummary = { ...context.lengthGuidance };
+      delete lengthSummary.samples;
+      const spec = { writingContract: projectConfig.writingContract, genreProfile: projectConfig.genreProfile, lengthGuidance: lengthSummary };
+      const stage = stagePacket(context.stageContext, role);
+      const signatures = compactSignatures(context.recentSignatures);
+      const required = [["本章大纲", context.chapterOutline], ["当前配置权威规格与长度趋势（目标不是硬门禁）", spec]];
+      if (role === "writer") {
+        required.push(["17 类审计契约（通过项只写 pass，只有问题项写证据）", context.auditContract]);
+        required.push(["Writer 指令", "草稿朝本书 targetMin–targetMax 充实场景、人物行动、证据与后果；勿贴硬下限写或复述填字。达到硬下限但低于目标仅提示，不自动再补。近期签名是实际正文结构；计划不同不证明实际不同。"]);
+      }
+      if (role !== "continuity-auditor") required.push(["最近三章精简结构签名（chapter/bodySha256 为来源）", signatures]);
+      if (stage) required.push(["阶段计划与实际证据（missing/unresolved 不得当已完成）", stage]);
+      const tasks = { causalEvents: context.causalEvents, foreshadowing: context.foreshadowing, promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks };
+      const optional = role === "reader-editor"
+        ? [["创作核心与写作规则", `${context.creativeBrief}\n${context.storyEngine}\n${context.writingRules}`]]
+        : role === "continuity-auditor"
+          ? [["上一章末尾", context.previousChapter], ["世界硬规则与当前状态", { worldRules: context.worldRules, dynamicState }], ["最近变化与相关长线任务", { recent, ...tasks }]]
+          : [["创作发动机与写作规则", `${context.storyEngine}\n${context.writingRules}`], ["世界硬规则与人物", `${context.worldRules}\n${context.characters}`], ["上一章末尾", context.previousChapter], ["最近状态、记忆与本章长线任务", { recent, dynamicState, memory: context.memory, ...tasks }]];
+      const roleLabel = { writer: "Writer", "continuity-auditor": "Continuity Auditor", "reader-editor": "Reader Editor" }[role];
+      const { packet, omittedSections } = boundedRolePacket(`# 《${project.title}》第${chapter}章 ${roleLabel} ${fast ? "Balanced-Fast" : "精简"} 资料包`, required, optional, BALANCED_FAST_PACKET_LIMITS[role]);
+      return { ready: true, chapter, profile, role, packet, packetChars: packet.length, packetSha256: sha256(packet), lengthGuidance: context.lengthGuidance, stageContext: context.stageContext, packetDiagnostics: { omittedSections, signatureSourceWarnings: context.signatureSourceWarnings, requiredSectionsPreserved: true, outlineUnclipped: true }, contextSnapshot: { key: snapshotKey, reused: snapshotReused, dependencyFingerprint, assemblyAttempts: _attempt + 1 } };
     }
     const packet = [
       `# 《${project.title}》第${chapter}章写作资料包`,
       "\n## 项目级写作规格\n", JSON.stringify(projectConfig, null, 2),
+      "\n## 稳定长度趋势\n", JSON.stringify(context.lengthGuidance, null, 2),
+      "\n## 可选阶段计划与证据\n", JSON.stringify(context.stageContext, null, 2),
       "\n## 本章大纲\n", context.chapterOutline,
       "\n## 创作核心与选定创意\n", context.creativeBrief, JSON.stringify(context.selectedIdea, null, 2), context.storyEngine,
       "\n## 原创性压力测试\n", context.noveltyReport,
@@ -2451,7 +2644,7 @@ export class NovelEngine {
       "\n## Promise、关系与对手压力\n", JSON.stringify({ promises: context.promises, relationships: context.relationships, oppositionClocks: context.oppositionClocks }, null, 2),
       "\n## 提交前逻辑与质量审计契约\n", JSON.stringify(context.auditContract, null, 2)
     ].join("\n");
-    return { ready: true, chapter, profile, role, packet, context };
+    return { ready: true, chapter, profile, role, packet, context, lengthGuidance: context.lengthGuidance, stageContext: context.stageContext, contextSnapshot: { key: snapshotKey, reused: false, dependencyFingerprint } };
   }
 
   async buildForeshadowingLedgerAfterChanges(projectDir, chapter, bodySha256, changes, timestamp) {

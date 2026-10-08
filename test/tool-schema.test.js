@@ -35,6 +35,9 @@ test("registered foreshadowing tools expose optional planting hash without chang
   const tools = new Map();
   plugin.register({ pluginConfig: { projectsRoot: path.join(root, "projects") }, registerTool(definition) { tools.set(definition.name, definition); } });
   assert.equal(tools.size, 34);
+  for (const name of ["novel_artifact_write", "novel_artifact_read"]) {
+    assert.ok(tools.get(name).parameters.properties.artifactType.anyOf.some((branch) => branch.const === "stage-plan"));
+  }
   const entry = tools.get("novel_foreshadowing_upsert").parameters.properties.entry;
   const finalizeEntry = tools.get("novel_finalize_chapter").parameters.properties.foreshadowingEntries.items;
   for (const schema of [entry, finalizeEntry]) {

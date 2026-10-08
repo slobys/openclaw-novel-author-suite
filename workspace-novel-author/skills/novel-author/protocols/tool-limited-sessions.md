@@ -8,7 +8,7 @@
 
 ## Writer 任务边界
 
-父会话只向 Writer 发送：当前 profile 的 writer packet、本章号、篇幅/类型要求和下面的输出 Schema。普通章 packet 不得超过 16000 字符。不得发送本地路径、命令、Engine 提交步骤或“完成整套生产流程”等编排指令。
+三个角色的真实 Prepare 包须在 Writer 启动前取齐并保存。父会话只向 Writer 发送：当前 profile 的 writer packet、本章号、篇幅/类型要求和下面的输出 Schema。普通章 packet 不得超过 16000 字符。不得发送本地路径、命令、Engine 提交步骤或“完成整套生产流程”等编排指令。
 
 Writer 的唯一最终回复必须是一个 JSON 对象；允许外层单个 `json` 代码围栏，但不能附带其他说明：
 
@@ -51,7 +51,7 @@ Writer 的唯一最终回复必须是一个 JSON 对象；允许外层单个 `js
 
 Writer 可以省略 `bodySha256` 和 `writerSessionId`。若主动提供，父会话落盘器会严格校验，错误时拒绝落盘，不能口头纠正后继续。
 
-通过项只写精确字符串 `"pass"`。不要为每个通过项写 evidence、description 或分析段落；只有真实问题才进入 `issues`。`plan.selected` 保持一句话，`beats` 只列必要 Beat，避免把正文分析再写一遍。
+通过项只写精确字符串 `"pass"`。不要为每个通过项写 evidence、description 或分析段落；只有真实问题才进入 `issues`。`plan` 可选增加 `chapterFunction`、`openingMode`、`conflictMode`、`solutionMode`、`emotionalTurn`、`hookType`、`stageId` 与一句变化理由，旧结构保持兼容。这些是计划，最终 signature 必须从实际正文/审稿得出；不得为消警造字段。`plan.selected` 保持一句话，`beats` 只列必要 Beat，避免把正文分析再写一遍。
 
 ## 父会话接收 Writer
 

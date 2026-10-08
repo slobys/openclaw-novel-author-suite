@@ -10,6 +10,9 @@ chapterSignature:
   chapterNo: 21
   function: investigation|confrontation|recovery|reveal|decision|travel|training|heist|battle|relationship|aftermath|setup
   sceneTypes: [dialogue-confrontation, exploration, chase]
+  openingMode: action|observation|dialogue|aftermath
+  solutionMode: inference|cooperation|sacrifice|withdrawal
+  stageId: optional_planned_or_observed_stage_id
   conflictMode: social|physical|mystery|resource|moral|internal|political
   openingEmotion: {name: unease, intensity: 4}
   midpointEmotion: {name: hope, intensity: 6}
@@ -39,7 +42,7 @@ chapterSignature:
 `narrative_fatigue.py` 读取最近章节 Signature，检测：
 - function 重复率和连续 run；
 - hookType 重复；
-- conflictMode 重复；
+- conflictMode、openingMode、solutionMode 重复（缺字段跳过，不能把缺失算重复）；
 - sceneTypes 多样性；
 - closingEmotion 强度过于单一；
 - Promise 只 open/touch、缺少 payoff；
@@ -47,3 +50,7 @@ chapterSignature:
 - irreversibleChange 长期为空。
 
 脚本输出是预警，不自动判定正文质量。语义层最终由 Arc Audit 决定。
+
+支持 Engine `{revision, entries}`/查询 `{entries}`、数组、JSONL 与既有 chapters/signatures/items；接受 chapter/chapterNo，过滤非章记录后按章升序选最新窗口。Writer/Reader只需近3章精简签名，源chapter/bodySha256不能丢。
+
+合理回调/反复调查/同题深化只产生透明 warning，语义 Reviewer 可说明新增因果、关系或代价。不得自动扩写、改变签名掩盖警告或改旧章；优先调整未来3–8章的功能与选择/解法。Genre/Outline Drift 继续用有界本地镜像，把 Engine chapter 投射为 chapterNo并保留真实Hash，不直接塞不兼容容器。

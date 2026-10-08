@@ -16,7 +16,7 @@ def load_rows(path: Path):
         if isinstance(obj, list):
             return [x for x in obj if isinstance(x, dict)]
         if isinstance(obj, dict):
-            for key in ("chapters", "signatures", "items"):
+            for key in ("entries", "chapters", "signatures", "items"):
                 if isinstance(obj.get(key), list):
                     return [x for x in obj[key] if isinstance(x, dict)]
             return [obj]
@@ -83,7 +83,17 @@ def main():
     ap.add_argument("--last", type=int, default=10)
     args = ap.parse_args()
 
-    rows = load_rows(Path(args.signature_file))[-max(1, args.last):]
+    rows = []
+    for row in load_rows(Path(args.signature_file)):
+        chapter = row.get("chapterNo", row.get("chapter"))
+        try:
+            if isinstance(chapter, bool) or float(chapter) != int(chapter) or int(chapter) < 1:
+                continue
+        except (TypeError, ValueError, OverflowError):
+            continue
+        rows.append({**row, "chapterNo": int(chapter)})
+    rows.sort(key=lambda row: row["chapterNo"])
+    rows = rows[-max(1, args.last):]
     warnings = []
 
     funcs = [r.get("function") for r in rows]
@@ -96,12 +106,13 @@ def main():
         if i is not None:
             close_intensities.append(float(i))
 
-    metrics = {"chaptersAnalyzed": len(rows)}
-    for label, values in (("function", funcs), ("hookType", hooks), ("conflictMode", conflicts), ("closingEmotion", close_names)):
+    metrics = {"chaptersAnalyzed": len(rows), "chapters": [r["chapterNo"] for r in rows]}
+    for label, values in (("function", funcs), ("hookType", hooks), ("conflictMode", conflicts), ("closingEmotion", close_names), ("openingMode", [r.get("openingMode") for r in rows]), ("solutionMode", [r.get("solutionMode") for r in rows])):
         dom, share = dominant_share(values)
         run = longest_run(values)
-        metrics[label] = {"dominant": dom, "share": round(share, 3), "longestRun": run}
-        if len(rows) >= 5 and share >= 0.6:
+        observed_count = sum(1 for value in values if value not in (None, ""))
+        metrics[label] = {"dominant": dom, "share": round(share, 3), "longestRun": run, "observedCount": observed_count}
+        if observed_count >= 5 and share >= 0.6:
             warnings.append(f"{label.upper()}_LOW_DIVERSITY:{dom}:{share:.2f}")
         if run >= 3:
             warnings.append(f"{label.upper()}_REPEATED_RUN:{dom}:{run}")

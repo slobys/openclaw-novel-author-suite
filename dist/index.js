@@ -41,7 +41,7 @@ const MemoryTier = Type.Union([Type.Literal("short"), Type.Literal("mid"), Type.
 
 const ArtifactType = Type.Union([
   "structure-fingerprint", "reference-synthesis", "creative-brief", "story-engine", "novelty-report",
-  "premise", "world", "world-rules", "characters", "master-outline", "writing-rules", "genre-profile",
+  "premise", "world", "world-rules", "characters", "master-outline", "writing-rules", "genre-profile", "stage-plan",
   "volume-outline", "chapter-outline"
 ].map((item) => Type.Literal(item)));
 

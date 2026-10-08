@@ -21,6 +21,31 @@ def run_script(name, *args):
 
 
 class NarrativeFatigueRegressionTests(unittest.TestCase):
+    def test_engine_entries_sort_by_chapter_before_window_and_skip_nonchapters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Path(temp) / "engine.json"
+            rows = [{"chapter": i, "function": "investigate", "openingMode": "evidence", "solutionMode": "cooperate", "bodySha256": "a" * 64} for i in range(7, 0, -1)]
+            rows.append({"revision": 99})
+            p.write_text(json.dumps({"revision": 1, "entries": rows}), encoding="utf-8")
+            result = run_script("narrative_fatigue.py", p, "--last", 3)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["metrics"]["chaptersAnalyzed"], 3)
+            self.assertEqual(data["metrics"]["chapters"], [5, 6, 7])
+            self.assertTrue(any(w.startswith("SOLUTIONMODE_REPEATED_RUN") for w in data["warnings"]))
+
+    def test_missing_optional_dimensions_do_not_fake_repetition(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Path(temp) / "sparse.json"
+            rows = [{"chapterNo": i + 1} for i in range(5)]
+            rows[-1]["solutionMode"] = "cooperate"
+            p.write_text(json.dumps(rows), encoding="utf-8")
+            result = run_script("narrative_fatigue.py", p)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["metrics"]["solutionMode"]["observedCount"], 1)
+            self.assertFalse(any(w.startswith("SOLUTIONMODE_") or w.startswith("OPENINGMODE_") for w in data["warnings"]))
+
     def run_with(self, intensities):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "sig.jsonl"
@@ -51,6 +76,25 @@ class NarrativeFatigueRegressionTests(unittest.TestCase):
 
 
 class LengthContractTests(unittest.TestCase):
+    def test_precommit_below_preferred_target_is_warning_not_hard_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            chapter = root / "chapter.md"
+            chapter.write_text("章" * 2000, encoding="utf-8")
+            digest = hashlib.sha256(chapter.read_bytes()).hexdigest()
+            checks = ["facts", "timeline", "space", "motivation", "knowledge", "worldRules", "resources", "causality", "foreshadowing", "originality", "voice", "sceneDynamics", "promiseFairness", "relationshipContinuity", "emotionCurve", "fatigueRisk", "oppositionPressure"]
+            paths = [root / name for name in ("audit.json", "payload.json", "quality.json")]
+            values = [{"decision": "pass", "bodySha256": digest, "checks": {key: "pass" for key in checks}, "issues": []}, {"payloadPass": True, "bodySha256": digest}, {"qualityPass": True, "bodySha256": digest}]
+            for path, value in zip(paths, values):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            result = run_script("precommit_gate.py", chapter, paths[0], "--payload-receipt", paths[1], "--quality-receipt", paths[2])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertTrue(data["gatePass"])
+            self.assertTrue(data["targetRangePass"])
+            self.assertFalse(data["preferredTargetRangePass"])
+            self.assertTrue(data["belowPreferredTarget"])
+
     def test_default_2166_han_is_accepted_without_padding(self):
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "chapter.md"
@@ -61,6 +105,9 @@ class LengthContractTests(unittest.TestCase):
             self.assertTrue(data["hardGatePass"])
             self.assertTrue(data["targetRangePass"])
             self.assertFalse(data["preferredTargetReached"])
+            self.assertFalse(data["preferredTargetRangePass"])
+            self.assertTrue(data["belowPreferredTarget"])
+            self.assertIn("BELOW_PREFERRED_TARGET", data["warnings"])
             self.assertEqual(data["lengthDecision"], "accept")
 
     def test_default_below_2000_requires_one_revision(self):
