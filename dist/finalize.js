@@ -69,16 +69,18 @@ function normalizeFinalizeInput(input) {
   };
 }
 
-async function ensureCommit(engine, input, expectedHash, steps) {
+async function ensureCommit(engine, input, expectedHash, steps, narrativePlan) {
   const status = await engine.commitStatus({ projectId: input.projectId, chapter: input.expectedChapter, requestId: input.requestId });
   if (status.status === "pending") throw codedError("FINALIZE_COMMIT_PENDING", "A matching chapter commit is still pending; retry the same finalize request after reconciliation.", { status });
   if (status.status === "committed") {
     const actualHash = String(status.bodySha256 ?? status.contentSha256 ?? "").toLowerCase();
     if (actualHash !== expectedHash) throw codedError("FINALIZE_IDEMPOTENCY_BODY_MISMATCH", "The requestId is already bound to a different chapter body.", { expected: expectedHash, actual: actualHash });
+    if (typeof engine.prepareNarrativeUpdates === "function") Object.assign(narrativePlan, await engine.prepareNarrativeUpdates({ projectId: input.projectId, chapter: input.expectedChapter, bodySha256: expectedHash, causalEvents: input.causalEvents, foreshadowingEntries: input.foreshadowingEntries, committed: true }));
     steps.push({ stage: "commit", status: "reused", requestId: input.requestId });
     return status;
   }
   if (status.status !== "not_found") throw codedError("FINALIZE_COMMIT_STATE_UNSAFE", "Chapter state cannot be safely finalized.", { status });
+  if (typeof engine.prepareNarrativeUpdates === "function") Object.assign(narrativePlan, await engine.prepareNarrativeUpdates({ projectId: input.projectId, chapter: input.expectedChapter, bodySha256: expectedHash, continuityDelta: input.continuityDelta ?? {}, causalEvents: input.causalEvents, foreshadowingEntries: input.foreshadowingEntries }));
 
   const audit = await engine.recordChapterAudit({
     projectId: input.projectId,
@@ -112,6 +114,8 @@ async function ensureCommit(engine, input, expectedHash, steps) {
     content: input.content,
     summary: input.summary,
     continuityDelta: input.continuityDelta ?? {},
+    causalEvents: input.causalEvents,
+    foreshadowingEntries: input.foreshadowingEntries,
     requestId: input.requestId
   });
   steps.push({ stage: "commit", status: "committed", transactionId: commit.transactionId });
@@ -123,25 +127,31 @@ export async function finalizeChapterRecoverable(engine, rawInput) {
   const input = normalizeFinalizeInput(rawInput);
   const expectedHash = canonicalBodySha256(input.content);
   const steps = [];
-  const commit = await ensureCommit(engine, input, expectedHash, steps);
+  const narrativePlan = { causalEvents: input.causalEvents, foreshadowingEntries: input.foreshadowingEntries };
+  const commit = await ensureCommit(engine, input, expectedHash, steps, narrativePlan);
   const bodySha256 = String(commit.bodySha256 ?? commit.contentSha256 ?? expectedHash).toLowerCase();
   const chapter = input.expectedChapter;
   const operations = {};
 
-  for (const raw of input.causalEvents) {
-    const result = await engine.recordCausalEvent({ projectId: input.projectId, event: { ...raw, chapter, bodySha256 } });
-    steps.push({ stage: "causalEvents", id: result.eventId, status: "upserted" });
+  if (narrativePlan.causalEvents.length && typeof engine.recordCausalEvents === "function") {
+    const result = await engine.recordCausalEvents({ projectId: input.projectId, events: narrativePlan.causalEvents.map((raw) => ({ ...raw, chapter, bodySha256 })) });
+    for (const event of result.events) steps.push({ stage: "causalEvents", id: event.eventId, status: "upserted" });
+  } else {
+    for (const raw of narrativePlan.causalEvents) {
+      const result = await engine.recordCausalEvent({ projectId: input.projectId, event: { ...raw, chapter, bodySha256 } });
+      steps.push({ stage: "causalEvents", id: result.eventId, status: "upserted" });
+    }
   }
-  operations.causalEvents = input.causalEvents.length
-    ? completed(CLOSURE_EVIDENCE.causalEvents, `${input.causalEvents.length} causal event(s) upserted by recoverable finalizer.`)
+  operations.causalEvents = narrativePlan.causalEvents.length
+    ? completed(CLOSURE_EVIDENCE.causalEvents, `${narrativePlan.causalEvents.length} causal event(s) upserted by recoverable finalizer.`)
     : skipped("No causal-event change was declared for this chapter.");
 
-  for (const raw of input.foreshadowingEntries) {
+  for (const raw of narrativePlan.foreshadowingEntries) {
     const result = await engine.upsertForeshadowing({ projectId: input.projectId, entry: { ...raw, sourceChapter: chapter, bodySha256 } });
     steps.push({ stage: "foreshadowing", id: result.id, status: "upserted" });
   }
-  operations.foreshadowing = input.foreshadowingEntries.length
-    ? completed(CLOSURE_EVIDENCE.foreshadowing, `${input.foreshadowingEntries.length} foreshadowing entry or entries upserted.`)
+  operations.foreshadowing = narrativePlan.foreshadowingEntries.length || input.continuityDelta?.foreshadowing?.length
+    ? completed(CLOSURE_EVIDENCE.foreshadowing, `${narrativePlan.foreshadowingEntries.length} foreshadowing entry or entries upserted; applicable continuity deltas were applied during commit.`)
     : skipped("No foreshadowing change was declared for this chapter.");
 
   const ledgerCounts = { promise: 0, relationship: 0, oppositionClock: 0, chapterSignature: 0 };
