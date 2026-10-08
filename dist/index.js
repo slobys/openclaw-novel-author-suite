@@ -96,6 +96,7 @@ const ForeshadowingEntry = Type.Object({
   surfaceMeaning: Type.Optional(Type.String({ maxLength: 3000 })),
   hiddenMeaning: Type.Optional(Type.String({ maxLength: 3000 })),
   plantedChapter: Type.Optional(Chapter),
+  plantedBodySha256: Type.Optional(Sha256),
   sourceChapter: Type.Optional(Chapter),
   bodySha256: Type.Optional(Sha256),
   reinforceChapters: Type.Optional(Type.Array(Chapter, { maxItems: 100 })),

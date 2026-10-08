@@ -270,6 +270,206 @@ function normalizeForeshadowingChanges(value) {
   });
 }
 
+function normalizeCausalEvent(event, previous = {}) {
+  if (!event || typeof event !== "object" || Array.isArray(event)) throw codedError("INVALID_CAUSAL_EVENT", "event must be an object.");
+  const eventId = safeKey(event.eventId, "event id");
+  if (typeof event.summary !== "string" || !event.summary.trim()) throw codedError("CAUSAL_EVENT_SUMMARY_REQUIRED", "event.summary is required.");
+  const status = event.status ?? previous.status ?? "planned";
+  if (!["planned", "occurred", "cancelled"].includes(status)) throw codedError("INVALID_CAUSAL_EVENT_STATUS", `Unsupported causal event status: ${status}`, { status });
+  const chapter = event.chapter === undefined ? previous.chapter ?? null : event.chapter === null ? null : parseChapter(event.chapter);
+  const bodySha256 = String(event.bodySha256 ?? previous.bodySha256 ?? "").trim().toLowerCase();
+  if (["occurred", "cancelled"].includes(status) && (chapter === null || !/^[a-f0-9]{64}$/.test(bodySha256))) {
+    throw codedError("CAUSAL_BODY_BINDING_REQUIRED", "Occurred or cancelled causal events require chapter and bodySha256.", { eventId, status });
+  }
+  return {
+    ...previous, ...sanitizeForJson(event, 100000), eventId, summary: event.summary.trim(), chapter, bodySha256: bodySha256 || null, status,
+    preconditions: normalizeStringArray(event.preconditions ?? previous.preconditions, "event.preconditions", 50, 1000),
+    causes: normalizeStringArray(event.causes ?? previous.causes, "event.causes", 50, 128).map((item) => safeKey(item, "cause event id")),
+    enables: normalizeStringArray(event.enables ?? previous.enables, "event.enables", 50, 128).map((item) => safeKey(item, "enabled event id")),
+    actorGoals: normalizeStringArray(event.actorGoals ?? previous.actorGoals, "event.actorGoals", 30, 1000),
+    stateChanges: normalizeStringArray(event.stateChanges ?? previous.stateChanges, "event.stateChanges", 50, 1000),
+    trigger: String(event.trigger ?? previous.trigger ?? "").trim(), action: String(event.action ?? previous.action ?? "").trim(),
+    cost: String(event.cost ?? previous.cost ?? "").trim(), outcome: String(event.outcome ?? previous.outcome ?? "").trim(), updatedAt: nowIso()
+  };
+}
+
+// chapter records provenance, not world time. Both edge spellings mean cause -> effect.
+function analyzeCausalGraph(events, scopeIds = null) {
+  const byId = new Map(events.map((event) => [event.eventId, event]));
+  const outgoing = new Map(events.map((event) => [event.eventId, new Set()]));
+  const neighbours = new Map(events.map((event) => [event.eventId, new Set()]));
+  const references = [];
+  const edge = (from, to) => {
+    if (byId.has(from) && byId.has(to)) {
+      outgoing.get(from).add(to);
+      neighbours.get(from).add(to);
+      neighbours.get(to).add(from);
+    }
+  };
+  for (const event of events) {
+    for (const id of event.causes ?? []) { references.push({ eventId: event.eventId, referenceId: id, kind: "causes" }); edge(id, event.eventId); }
+    for (const id of event.enables ?? []) { references.push({ eventId: event.eventId, referenceId: id, kind: "enables" }); edge(event.eventId, id); }
+  }
+  const included = scopeIds === null ? new Set(byId.keys()) : new Set(scopeIds.filter((id) => byId.has(id)));
+  const queue = [...included];
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const id of neighbours.get(queue[index]) ?? []) if (!included.has(id)) { included.add(id); queue.push(id); }
+  }
+  const errors = [];
+  const warnings = [];
+  for (const reference of references) {
+    if (!included.has(reference.eventId)) continue;
+    if (reference.referenceId === reference.eventId) errors.push({ code: "CAUSAL_SELF_REFERENCE", ...reference, message: "A causal event cannot reference itself." });
+    else if (!byId.has(reference.referenceId)) {
+      const finding = { code: "CAUSAL_REFERENCE_NOT_FOUND", ...reference, message: "Causal reference has no ledger event." };
+      (reference.kind === "causes" && byId.get(reference.eventId).status === "occurred" ? errors : warnings).push(finding);
+    }
+  }
+  for (const id of included) {
+    const source = byId.get(id);
+    for (const targetId of outgoing.get(id)) {
+      const target = byId.get(targetId);
+      if (target.status === "occurred" && source.status !== "occurred") {
+        errors.push({ code: "CAUSAL_CAUSE_NOT_OCCURRED", eventId: targetId, causeId: id, causeStatus: source.status, message: "An occurred effect cannot depend on a planned or cancelled cause." });
+      }
+    }
+  }
+  const indegree = new Map([...included].map((id) => [id, 0]));
+  for (const id of included) for (const to of outgoing.get(id)) indegree.set(to, indegree.get(to) + 1);
+  const ready = [...included].filter((id) => indegree.get(id) === 0);
+  const order = [];
+  for (let index = 0; index < ready.length; index += 1) {
+    const id = ready[index];
+    order.push(id);
+    for (const to of outgoing.get(id)) { indegree.set(to, indegree.get(to) - 1); if (indegree.get(to) === 0) ready.push(to); }
+  }
+  if (order.length !== included.size && !errors.some((finding) => finding.code === "CAUSAL_SELF_REFERENCE")) {
+    // Iterative DFS keeps long chains within the configured ledger limit off the JS call stack.
+    const visited = new Set();
+    let cycle = [];
+    for (const start of included) {
+      if (visited.has(start) || cycle.length) continue;
+      const active = new Map([[start, 0]]);
+      const stack = [{ id: start, children: [...outgoing.get(start)], cursor: 0 }];
+      visited.add(start);
+      while (stack.length && !cycle.length) {
+        const frame = stack.at(-1);
+        if (frame.cursor === frame.children.length) { active.delete(frame.id); stack.pop(); continue; }
+        const next = frame.children[frame.cursor++];
+        if (active.has(next)) { cycle = [...stack.slice(active.get(next)).map((item) => item.id), next]; break; }
+        if (!visited.has(next)) { visited.add(next); active.set(next, stack.length); stack.push({ id: next, children: [...outgoing.get(next)], cursor: 0 }); }
+      }
+    }
+    errors.push({ code: "CAUSAL_CYCLE", cycle, message: "Causal dependencies contain a directed cycle." });
+  }
+  return { errors, warnings, events: [...included].map((id) => byId.get(id)), order };
+}
+
+function throwNarrativeFinding(findings) {
+  if (findings.length) { const { code, message, ...details } = findings[0]; throw codedError(code, message, details); }
+}
+
+function foreshadowingFindings(entry) {
+  const errors = [];
+  const actual = ["open", "advanced", "paid"].includes(entry.status);
+  if (actual && !Number.isInteger(entry.plantedChapter)) errors.push({ code: "FORESHADOW_PLANT_REQUIRED", id: entry.id, message: "An active or paid foreshadowing entry must retain its planting chapter." });
+  if (actual && Number.isInteger(entry.plantedChapter) && Number.isInteger(entry.sourceChapter) && entry.plantedChapter > entry.sourceChapter) errors.push({ code: "FORESHADOW_PLANT_AFTER_SOURCE", id: entry.id, message: "A clue cannot be planted after its declared update or payoff." });
+  if (entry.status === "paid" && (entry.payoffChapter != null || entry.plantedBodySha256) && (!Number.isInteger(entry.payoffChapter) || entry.payoffChapter < entry.plantedChapter || entry.payoffChapter > entry.sourceChapter)) errors.push({ code: "FORESHADOW_PAYOFF_INVALID", id: entry.id, message: "A paid clue must retain a payoff chapter at or after planting and no later than its source." });
+  return errors;
+}
+
+function foreshadowingWarnings(entry) {
+  return ["open", "advanced", "paid"].includes(entry.status) && !entry.plantedBodySha256 && Number.isInteger(entry.plantedChapter)
+    ? [{ code: "FORESHADOW_PLANT_PROVENANCE_LEGACY", id: entry.id, chapter: entry.plantedChapter, message: "Historical planting hash is unknown; the latest update hash is not planting proof." }]
+    : [];
+}
+
+function normalizeForeshadowingEntry(entry, previous = {}, checkTerminal = true) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw codedError("INVALID_FORESHADOWING_ENTRY", "entry must be an object.");
+  const id = safeKey(entry.id, "foreshadowing id");
+  const status = entry.status ?? previous.status ?? "planned";
+  if (!["planned", "open", "advanced", "paid", "cancelled"].includes(status)) throw codedError("INVALID_FORESHADOWING_STATUS", `Unsupported foreshadowing status: ${status}`, { status });
+  const type = entry.type ?? previous.type ?? "plot";
+  if (!["plot", "character", "world", "theme", "prop", "information"].includes(type)) throw codedError("INVALID_FORESHADOWING_TYPE", `Unsupported foreshadowing type: ${type}`, { type });
+  const allowed = { planned: ["planned", "open", "cancelled"], open: ["open", "advanced", "paid", "cancelled"], advanced: ["advanced", "paid", "cancelled"], paid: ["paid"], cancelled: ["cancelled"] };
+  const from = previous.status ?? "planned";
+  if (!allowed[from]?.includes(status)) throw codedError("FORESHADOW_TRANSITION_INVALID", `Cannot transition foreshadowing ${id} from ${from} to ${status}.`, { id, from, to: status });
+  const sourceChapter = entry.sourceChapter === undefined ? previous.sourceChapter ?? null : entry.sourceChapter === null ? null : parseChapter(entry.sourceChapter);
+  const bodySha256 = String(entry.bodySha256 ?? previous.bodySha256 ?? "").trim().toLowerCase();
+  if (status !== "planned" && (sourceChapter === null || !/^[a-f0-9]{64}$/.test(bodySha256))) throw codedError("FORESHADOW_BODY_BINDING_REQUIRED", "Non-planned foreshadowing updates require sourceChapter and bodySha256.", { id, status });
+  let plantedChapter = entry.plantedChapter === undefined ? previous.plantedChapter ?? null : entry.plantedChapter === null ? null : parseChapter(entry.plantedChapter);
+  if (status === "open" && from === "planned" && entry.plantedChapter === undefined) plantedChapter = sourceChapter;
+  if (from !== "planned" && previous.plantedChapter != null && plantedChapter !== previous.plantedChapter) throw codedError("FORESHADOW_PLANT_IMMUTABLE", "An actual planting anchor cannot be silently changed.", { id, expected: previous.plantedChapter, actual: plantedChapter });
+  let payoffWindow = previous.payoffWindow ?? null;
+  if (entry.payoffWindow !== undefined) {
+    if (entry.payoffWindow === null) payoffWindow = null;
+    else {
+      if (typeof entry.payoffWindow !== "object" || Array.isArray(entry.payoffWindow)) throw codedError("INVALID_PAYOFF_WINDOW", "entry.payoffWindow must be an object.");
+      payoffWindow = { start: parseChapter(entry.payoffWindow.start), end: parseChapter(entry.payoffWindow.end) };
+      if (payoffWindow.end < payoffWindow.start) throw codedError("INVALID_PAYOFF_WINDOW", "Foreshadowing payoffWindow.end must be at or after start.");
+    }
+  }
+  const normalized = {
+    ...previous, ...sanitizeForJson(entry, 100000), id, type, status, plantedChapter, sourceChapter, bodySha256: bodySha256 || null,
+    reinforceChapters: normalizeChapterList(entry.reinforceChapters ?? previous.reinforceChapters, "entry.reinforceChapters"), payoffWindow,
+    prerequisites: normalizeStringArray(entry.prerequisites ?? previous.prerequisites, "entry.prerequisites", 50, 1000),
+    surfaceMeaning: String(entry.surfaceMeaning ?? previous.surfaceMeaning ?? "").trim(), hiddenMeaning: String(entry.hiddenMeaning ?? previous.hiddenMeaning ?? "").trim(),
+    readerAwareness: String(entry.readerAwareness ?? previous.readerAwareness ?? "unknown").trim(), characterAwareness: sanitizeForJson(entry.characterAwareness ?? previous.characterAwareness ?? {}, 50000),
+    payoffPlan: String(entry.payoffPlan ?? previous.payoffPlan ?? "").trim(), notes: String(entry.notes ?? previous.notes ?? "").trim(), updatedAt: nowIso()
+  };
+  // A later payoff hash is never substituted for missing historical planting evidence.
+  normalized.plantedBodySha256 = entry.plantedBodySha256 === undefined ? previous.plantedBodySha256 ?? null : String(entry.plantedBodySha256).trim().toLowerCase();
+  if (normalized.plantedBodySha256 !== null && !/^[a-f0-9]{64}$/.test(normalized.plantedBodySha256)) throw codedError("INVALID_BODY_HASH", "plantedBodySha256 must be a SHA-256 hex string.");
+  if (status === "open" && from === "planned" && plantedChapter === sourceChapter) {
+    if (entry.plantedBodySha256 !== undefined && normalized.plantedBodySha256 !== bodySha256) throw codedError("FORESHADOW_PLANT_BODY_HASH_MISMATCH", "New planting evidence must match its source body.", { id });
+    normalized.plantedBodySha256 = bodySha256;
+  }
+  normalized.plantedEvidenceHistory = previous.plantedEvidenceHistory ?? [];
+  if (previous.plantedBodySha256 && normalized.plantedBodySha256 !== previous.plantedBodySha256) {
+    const historical = { chapter: previous.plantedChapter, bodySha256: previous.plantedBodySha256 };
+    if (!normalized.plantedEvidenceHistory.some((item) => item.chapter === historical.chapter && item.bodySha256 === historical.bodySha256)) normalized.plantedEvidenceHistory = [...normalized.plantedEvidenceHistory, historical];
+  }
+  if (status === "paid") normalized.payoffChapter = entry.payoffChapter == null ? previous.payoffChapter ?? sourceChapter : parseChapter(entry.payoffChapter);
+  if (status === "paid" && from !== "paid" && normalized.payoffChapter !== sourceChapter) throw codedError("FORESHADOW_PAYOFF_INVALID", "A new payoff must be bound to its source chapter.", { id, sourceChapter, payoffChapter: normalized.payoffChapter });
+  if (from === "paid" && previous.payoffChapter != null && normalized.payoffChapter !== previous.payoffChapter) throw codedError("FORESHADOW_PAYOFF_INVALID", "A recorded payoff chapter cannot be silently changed.", { id, expected: previous.payoffChapter, actual: normalized.payoffChapter });
+  if (status === "cancelled") normalized.cancelledChapter = entry.cancelledChapter == null ? previous.cancelledChapter ?? sourceChapter : parseChapter(entry.cancelledChapter);
+  throwNarrativeFinding(foreshadowingFindings(normalized));
+  if (checkTerminal && ["paid", "cancelled"].includes(from)) {
+    const baseline = normalizeForeshadowingEntry({ id }, previous, false);
+    const explicitProvenance = entry.plantedBodySha256 !== undefined;
+    const frozenPayload = (value) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== "updatedAt" && !(explicitProvenance && ["plantedBodySha256", "plantedEvidenceHistory"].includes(key))));
+    if (stableStringify(frozenPayload(normalized)) !== stableStringify(frozenPayload(baseline))) throw codedError("FORESHADOW_TERMINAL_PAYLOAD_MISMATCH", "A terminal clue only permits identical normalized replay or an explicit planting-evidence rebuild.", { id, status });
+  }
+  return normalized;
+}
+
+function projectForeshadowingChanges(ledger, chapter, bodySha256, changes, timestamp) {
+  if (!changes.length) return { ledger, changed: false };
+  const next = structuredClone(ledger);
+  for (const change of changes) {
+    const index = next.entries.findIndex((entry) => entry.id === change.id);
+    const previous = index >= 0 ? next.entries[index] : {};
+    const status = { open: "open", advance: "advanced", close: "paid", payoff: "paid", cancel: "cancelled" }[change.action];
+    const patch = { id: change.id, status, sourceChapter: chapter, bodySha256 };
+    if (index < 0) patch.createdFromContinuityDelta = true;
+    if (change.action === "advance") patch.lastAdvancedChapter = chapter;
+    if (change.note) {
+      const marker = `[chapter:${chapter}|action:${change.action}] ${change.note}`;
+      const lines = String(previous.notes ?? "").split("\n").filter(Boolean);
+      if (!lines.includes(marker)) lines.push(marker);
+      patch.notes = lines.join("\n");
+    }
+    const normalized = { ...normalizeForeshadowingEntry(patch, previous), updatedAt: timestamp };
+    if (index >= 0) next.entries[index] = normalized;
+    else next.entries.push(normalized);
+  }
+  next.entries.sort((left, right) => (left.plantedChapter ?? 999999) - (right.plantedChapter ?? 999999) || left.id.localeCompare(right.id));
+  next.schemaVersion = ENGINE_SCHEMA_VERSION;
+  next.revision = Number(next.revision ?? 0) + 1;
+  next.updatedAt = timestamp;
+  return { ledger: next, changed: true };
+}
+
 function normalizeTitle(title, chapter, rejectEmbeddedHeading = true) {
   const normalized = String(title ?? "").trim();
   if (!normalized) throw codedError("CHAPTER_TITLE_REQUIRED", "Chapter title is required.");
@@ -1526,55 +1726,110 @@ export class NovelEngine {
     });
   }
 
-  async recordCausalEvent({ projectId, event, expectedRevision = null }) {
+  async assertCausalEvidenceBindings(projectDir, events, projectedBody = null) {
+    const chapters = new Map();
+    for (const event of events) {
+      if (!["occurred", "cancelled"].includes(event.status) && !event.bodySha256) continue;
+      if (!Number.isInteger(event.chapter) || !/^[a-f0-9]{64}$/i.test(String(event.bodySha256 ?? ""))) throw codedError("CAUSAL_BODY_BINDING_REQUIRED", "Causal facts require committed chapter evidence.", { eventId: event.eventId });
+      if (projectedBody && event.chapter === projectedBody.chapter && event.bodySha256 === projectedBody.bodySha256) continue;
+      if (!chapters.has(event.chapter)) chapters.set(event.chapter, await this.getCommittedChapterBody(projectDir, event.chapter));
+      const parsed = chapters.get(event.chapter);
+      if (parsed.bodySha256 !== event.bodySha256) throw codedError("SOURCE_BODY_HASH_MISMATCH", "Causal evidence no longer matches its committed chapter.", { eventId: event.eventId, chapter: event.chapter, expected: parsed.bodySha256, actual: event.bodySha256 });
+    }
+  }
+
+  async assertForeshadowingEvidenceBindings(projectDir, entries, projectedBody = null) {
+    for (const entry of entries) {
+      const bindings = [];
+      if (entry.sourceChapter !== null && entry.bodySha256) bindings.push([entry.sourceChapter, entry.bodySha256]);
+      if (entry.plantedBodySha256) bindings.push([entry.plantedChapter, entry.plantedBodySha256]);
+      for (const [chapter, bodySha256] of bindings) {
+        if (projectedBody && chapter === projectedBody.chapter && bodySha256 === projectedBody.bodySha256) continue;
+        await this.assertCommittedBodyBinding(projectDir, chapter, bodySha256);
+      }
+    }
+  }
+
+  // Internal preflight, not a new tool. Projection and mutations use the same validators.
+  async prepareNarrativeUpdates({ projectId, chapter, bodySha256, continuityDelta = {}, causalEvents = [], foreshadowingEntries = [], committed = false }) {
     const projectDir = await this.requireProject(projectId);
-    if (!event || typeof event !== "object" || Array.isArray(event)) throw codedError("INVALID_CAUSAL_EVENT", "event must be an object.");
+    const number = parseChapter(chapter);
     return this.withProjectLock(projectDir, async () => {
       await this.recoverPendingTransactionsUnlocked(projectDir);
-      const eventId = safeKey(event.eventId, "event id");
-      if (typeof event.summary !== "string" || !event.summary.trim()) throw codedError("CAUSAL_EVENT_SUMMARY_REQUIRED", "event.summary is required.");
-      const status = event.status ?? "planned";
-      if (!["planned", "occurred", "cancelled"].includes(status)) throw codedError("INVALID_CAUSAL_EVENT_STATUS", `Unsupported causal event status: ${status}`, { status });
-      const chapter = event.chapter === undefined || event.chapter === null ? null : parseChapter(event.chapter);
-      const bodySha256 = String(event.bodySha256 ?? "").trim().toLowerCase();
-      if (["occurred", "cancelled"].includes(status) && (chapter === null || !/^[a-f0-9]{64}$/.test(bodySha256))) {
-        throw codedError("CAUSAL_BODY_BINDING_REQUIRED", "Occurred or cancelled causal events require chapter and bodySha256.", { eventId, status });
-      }
-      if (chapter !== null && bodySha256) await this.assertCommittedBodyBinding(projectDir, chapter, bodySha256);
+      return this.prepareNarrativeUpdatesUnlocked(projectDir, { chapter: number, bodySha256, continuityDelta, causalEvents, foreshadowingEntries, committed });
+    });
+  }
+
+  async prepareNarrativeUpdatesUnlocked(projectDir, { chapter, bodySha256, continuityDelta = {}, causalEvents = [], foreshadowingEntries = [], committed = false }) {
+    const deltaEvents = committed ? [] : continuityDelta.causalEvents ?? [];
+    if (![deltaEvents, causalEvents, foreshadowingEntries].every(Array.isArray)) throw codedError("INVALID_NARRATIVE_UPDATES", "Causal and foreshadowing updates must be arrays.");
+    const graph = await readJsonOr(resolveInside(projectDir, "story/causal-events.json"), { events: [] });
+    const byId = new Map(graph.events.map((event) => [event.eventId, event]));
+    const changed = new Map();
+    for (const raw of [...deltaEvents, ...causalEvents]) {
+      const normalized = normalizeCausalEvent({ ...raw, chapter, bodySha256 }, byId.get(raw?.eventId) ?? {});
+      byId.set(normalized.eventId, normalized);
+      changed.set(normalized.eventId, normalized);
+    }
+    if (byId.size > this.config.maxLedgerEntries) throw codedError("LEDGER_LIMIT_EXCEEDED", "Causal ledger exceeds configured entry limit.");
+    const analysis = analyzeCausalGraph([...byId.values()], [...changed.keys()]);
+    throwNarrativeFinding(analysis.errors);
+    await this.assertCausalEvidenceBindings(projectDir, analysis.events, { chapter, bodySha256 });
+    const ranks = new Map(analysis.order.map((id, rank) => [id, rank]));
+    const orderedEvents = [...changed.values()].sort((left, right) => ranks.get(left.eventId) - ranks.get(right.eventId));
+
+    const storedForeshadowing = await readJsonOr(resolveInside(projectDir, "story/foreshadowing.json"), { entries: [] });
+    const changes = committed ? [] : normalizeForeshadowingChanges(continuityDelta.foreshadowing);
+    const projected = projectForeshadowingChanges(storedForeshadowing, chapter, bodySha256, changes, nowIso()).ledger;
+    const entries = new Map(projected.entries.map((entry) => [entry.id, entry]));
+    await this.assertForeshadowingEvidenceBindings(projectDir, [...new Set(changes.map((change) => change.id))].map((id) => entries.get(id)), { chapter, bodySha256 });
+    const finalStatus = new Map(foreshadowingEntries.map((raw) => [raw?.id, raw?.status]));
+    const orderedEntries = [];
+    for (const raw of foreshadowingEntries) {
+      const previous = entries.get(raw?.id) ?? {};
+      const terminalReplay = committed && ["paid", "cancelled"].includes(previous.status) && previous.sourceChapter === chapter && previous.bodySha256 === bodySha256 && finalStatus.get(raw?.id) === previous.status;
+      if (terminalReplay && raw.status !== previous.status) continue;
+      const normalized = normalizeForeshadowingEntry({ ...raw, sourceChapter: chapter, bodySha256 }, previous);
+      await this.assertForeshadowingEvidenceBindings(projectDir, [normalized], { chapter, bodySha256 });
+      entries.set(normalized.id, normalized);
+      orderedEntries.push(normalized);
+    }
+    if (entries.size > this.config.maxLedgerEntries) throw codedError("LEDGER_LIMIT_EXCEEDED", "Foreshadowing ledger exceeds configured entry limit.");
+    return { causalEvents: orderedEvents, foreshadowingEntries: orderedEntries };
+  }
+
+  async recordCausalEvent({ projectId, event, expectedRevision = null }) {
+    const { events, ...result } = await this.recordCausalEvents({ projectId, events: [event], expectedRevision });
+    return { ...result, ...events[0] };
+  }
+
+  // Internal graph-file batch; no chapter or other ledger is made atomic with it.
+  async recordCausalEvents({ projectId, events, expectedRevision = null }) {
+    const projectDir = await this.requireProject(projectId);
+    if (!Array.isArray(events) || !events.length) throw codedError("INVALID_CAUSAL_EVENT", "events must be a nonempty array.");
+    return this.withProjectLock(projectDir, async () => {
+      await this.recoverPendingTransactionsUnlocked(projectDir);
       const graphPath = resolveInside(projectDir, "story/causal-events.json");
       const graph = await readJsonOr(graphPath, { schemaVersion: ENGINE_SCHEMA_VERSION, revision: 0, events: [] });
       if (expectedRevision !== null && Number(expectedRevision) !== Number(graph.revision ?? 0)) throw codedError("CAUSAL_LEDGER_REVISION_MISMATCH", "Causal ledger changed since it was read.", { expectedRevision, actualRevision: graph.revision ?? 0 });
-      const index = (graph.events ?? []).findIndex((item) => item.eventId === eventId);
-      const previous = index >= 0 ? graph.events[index] : {};
-      const normalized = {
-        ...previous,
-        ...sanitizeForJson(event, 100000),
-        eventId,
-        summary: event.summary.trim(),
-        chapter,
-        bodySha256: bodySha256 || null,
-        status,
-        preconditions: normalizeStringArray(event.preconditions ?? previous.preconditions, "event.preconditions", 50, 1000),
-        causes: normalizeStringArray(event.causes ?? previous.causes, "event.causes", 50, 128).map((item) => safeKey(item, "cause event id")),
-        enables: normalizeStringArray(event.enables ?? previous.enables, "event.enables", 50, 128).map((item) => safeKey(item, "enabled event id")),
-        actorGoals: normalizeStringArray(event.actorGoals ?? previous.actorGoals, "event.actorGoals", 30, 1000),
-        stateChanges: normalizeStringArray(event.stateChanges ?? previous.stateChanges, "event.stateChanges", 50, 1000),
-        trigger: String(event.trigger ?? previous.trigger ?? "").trim(),
-        action: String(event.action ?? previous.action ?? "").trim(),
-        cost: String(event.cost ?? previous.cost ?? "").trim(),
-        outcome: String(event.outcome ?? previous.outcome ?? "").trim(),
-        updatedAt: nowIso()
-      };
-      if (normalized.causes.includes(eventId) || normalized.enables.includes(eventId)) throw codedError("CAUSAL_SELF_REFERENCE", "A causal event cannot reference itself.", { eventId });
-      if (index >= 0) graph.events[index] = normalized;
-      else graph.events.push(normalized);
-      if (graph.events.length > this.config.maxLedgerEntries) throw codedError("LEDGER_LIMIT_EXCEEDED", "Causal ledger exceeds configured entry limit.");
+      const byId = new Map(graph.events.map((event) => [event.eventId, event]));
+      const changed = new Map();
+      for (const event of events) {
+        const normalized = normalizeCausalEvent(event, byId.get(event?.eventId) ?? {});
+        byId.set(normalized.eventId, normalized);
+        changed.set(normalized.eventId, normalized);
+      }
+      if (byId.size > this.config.maxLedgerEntries) throw codedError("LEDGER_LIMIT_EXCEEDED", "Causal ledger exceeds configured entry limit.");
+      const analysis = analyzeCausalGraph([...byId.values()], [...changed.keys()]);
+      throwNarrativeFinding(analysis.errors);
+      await this.assertCausalEvidenceBindings(projectDir, analysis.events);
+      graph.events = [...byId.values()];
       graph.events.sort((left, right) => (left.chapter ?? 999999) - (right.chapter ?? 999999) || left.eventId.localeCompare(right.eventId));
       graph.schemaVersion = ENGINE_SCHEMA_VERSION;
       graph.revision = Number(graph.revision ?? 0) + 1;
       graph.updatedAt = nowIso();
       await writeJson(graphPath, graph);
-      return { projectId: normalizeProjectId(projectId), eventId, status, chapter, eventCount: graph.events.length, revision: graph.revision, path: "story/causal-events.json" };
+      return { projectId: normalizeProjectId(projectId), events: [...changed.values()].map(({ eventId, status, chapter }) => ({ eventId, status, chapter })), eventCount: graph.events.length, revision: graph.revision, path: "story/causal-events.json" };
     });
   }
 
@@ -1583,51 +1838,14 @@ export class NovelEngine {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw codedError("INVALID_FORESHADOWING_ENTRY", "entry must be an object.");
     return this.withProjectLock(projectDir, async () => {
       await this.recoverPendingTransactionsUnlocked(projectDir);
-      const id = safeKey(entry.id, "foreshadowing id");
-      const status = entry.status ?? "planned";
-      if (!["planned", "open", "advanced", "paid", "cancelled"].includes(status)) throw codedError("INVALID_FORESHADOWING_STATUS", `Unsupported foreshadowing status: ${status}`, { status });
-      const type = entry.type ?? "plot";
-      if (!["plot", "character", "world", "theme", "prop", "information"].includes(type)) throw codedError("INVALID_FORESHADOWING_TYPE", `Unsupported foreshadowing type: ${type}`, { type });
-      const plantedChapter = entry.plantedChapter === undefined || entry.plantedChapter === null ? null : parseChapter(entry.plantedChapter);
-      const sourceChapter = entry.sourceChapter === undefined || entry.sourceChapter === null ? null : parseChapter(entry.sourceChapter);
-      const bodySha256 = String(entry.bodySha256 ?? "").trim().toLowerCase();
-      if (status !== "planned" && (sourceChapter === null || !/^[a-f0-9]{64}$/.test(bodySha256))) {
-        throw codedError("FORESHADOW_BODY_BINDING_REQUIRED", "Non-planned foreshadowing updates require sourceChapter and bodySha256.", { id, status });
-      }
-      if (sourceChapter !== null && bodySha256) await this.assertCommittedBodyBinding(projectDir, sourceChapter, bodySha256);
-      let payoffWindow = null;
-      if (entry.payoffWindow !== undefined && entry.payoffWindow !== null) {
-        if (!entry.payoffWindow || typeof entry.payoffWindow !== "object" || Array.isArray(entry.payoffWindow)) throw codedError("INVALID_PAYOFF_WINDOW", "entry.payoffWindow must be an object.");
-        const start = parseChapter(entry.payoffWindow.start);
-        const end = parseChapter(entry.payoffWindow.end);
-        if (end < start) throw codedError("INVALID_PAYOFF_WINDOW", "Foreshadowing payoffWindow.end must be at or after start.");
-        payoffWindow = { start, end };
-      }
       const ledgerPath = resolveInside(projectDir, "story/foreshadowing.json");
       const ledger = await readJsonOr(ledgerPath, { schemaVersion: ENGINE_SCHEMA_VERSION, revision: 0, entries: [] });
       if (expectedRevision !== null && Number(expectedRevision) !== Number(ledger.revision ?? 0)) throw codedError("FORESHADOW_LEDGER_REVISION_MISMATCH", "Foreshadowing ledger changed since it was read.", { expectedRevision, actualRevision: ledger.revision ?? 0 });
-      const index = (ledger.entries ?? []).findIndex((item) => item.id === id);
-      const previous = index >= 0 ? ledger.entries[index] : {};
-      const normalized = {
-        ...previous,
-        ...sanitizeForJson(entry, 100000),
-        id,
-        type,
-        status,
-        plantedChapter,
-        sourceChapter,
-        bodySha256: bodySha256 || null,
-        reinforceChapters: normalizeChapterList(entry.reinforceChapters ?? previous.reinforceChapters, "entry.reinforceChapters"),
-        payoffWindow: payoffWindow ?? previous.payoffWindow ?? null,
-        prerequisites: normalizeStringArray(entry.prerequisites ?? previous.prerequisites, "entry.prerequisites", 50, 1000),
-        surfaceMeaning: String(entry.surfaceMeaning ?? previous.surfaceMeaning ?? "").trim(),
-        hiddenMeaning: String(entry.hiddenMeaning ?? previous.hiddenMeaning ?? "").trim(),
-        readerAwareness: String(entry.readerAwareness ?? previous.readerAwareness ?? "unknown").trim(),
-        characterAwareness: sanitizeForJson(entry.characterAwareness ?? previous.characterAwareness ?? {}, 50000),
-        payoffPlan: String(entry.payoffPlan ?? previous.payoffPlan ?? "").trim(),
-        notes: String(entry.notes ?? previous.notes ?? "").trim(),
-        updatedAt: nowIso()
-      };
+      const id = safeKey(entry.id, "foreshadowing id");
+      const index = ledger.entries.findIndex((item) => item.id === id);
+      const normalized = normalizeForeshadowingEntry(entry, index >= 0 ? ledger.entries[index] : {});
+      await this.assertForeshadowingEvidenceBindings(projectDir, [normalized]);
+      const { status } = normalized;
       if (index >= 0) ledger.entries[index] = normalized;
       else ledger.entries.push(normalized);
       if (ledger.entries.length > this.config.maxLedgerEntries) throw codedError("LEDGER_LIMIT_EXCEEDED", "Foreshadowing ledger exceeds configured entry limit.");
@@ -2239,57 +2457,7 @@ export class NovelEngine {
   async buildForeshadowingLedgerAfterChanges(projectDir, chapter, bodySha256, changes, timestamp) {
     const ledgerPath = resolveInside(projectDir, "story/foreshadowing.json");
     const ledger = await readJsonOr(ledgerPath, { schemaVersion: ENGINE_SCHEMA_VERSION, revision: 0, entries: [] });
-    if (changes.length === 0) return { ledger, changed: false };
-    const next = structuredClone(ledger);
-    for (const change of changes) {
-      let entry = (next.entries ?? []).find((item) => item.id === change.id);
-      if (!entry) {
-        entry = {
-          id: change.id,
-          type: "plot",
-          status: "planned",
-          plantedChapter: null,
-          reinforceChapters: [],
-          payoffWindow: null,
-          prerequisites: [],
-          surfaceMeaning: "",
-          hiddenMeaning: "",
-          readerAwareness: "unknown",
-          characterAwareness: {},
-          payoffPlan: "",
-          notes: "",
-          createdFromContinuityDelta: true
-        };
-        next.entries.push(entry);
-      }
-      if (change.action === "open") {
-        entry.status = "open";
-        entry.plantedChapter ??= chapter;
-      } else if (change.action === "advance") {
-        entry.status = "advanced";
-        entry.lastAdvancedChapter = chapter;
-      } else if (["close", "payoff"].includes(change.action)) {
-        entry.status = "paid";
-        entry.payoffChapter = chapter;
-      } else if (change.action === "cancel") {
-        entry.status = "cancelled";
-        entry.cancelledChapter = chapter;
-      }
-      if (change.note) {
-        const marker = `[chapter:${chapter}|action:${change.action}] ${change.note}`;
-        const lines = String(entry.notes ?? "").split("\n").filter(Boolean);
-        if (!lines.includes(marker)) lines.push(marker);
-        entry.notes = lines.join("\n");
-      }
-      entry.updatedAt = timestamp;
-      entry.sourceChapter = chapter;
-      entry.bodySha256 = bodySha256;
-    }
-    next.entries.sort((left, right) => (left.plantedChapter ?? 999999) - (right.plantedChapter ?? 999999) || left.id.localeCompare(right.id));
-    next.schemaVersion = ENGINE_SCHEMA_VERSION;
-    next.revision = Number(next.revision ?? 0) + 1;
-    next.updatedAt = timestamp;
-    return { ledger: next, changed: true };
+    return projectForeshadowingChanges(ledger, chapter, bodySha256, changes, timestamp);
   }
 
   async verifyAuditForBody(projectDir, chapter, bodySha256, hanChars, projectConfig) {
@@ -2394,7 +2562,7 @@ export class NovelEngine {
     };
   }
 
-  async commitChapter({ projectId, expectedChapter, title, content, summary, continuityDelta = {}, requestId = "" }) {
+  async commitChapter({ projectId, expectedChapter, title, content, summary, continuityDelta = {}, requestId = "", causalEvents = [], foreshadowingEntries = [] }) {
     const projectDir = await this.requireProject(projectId);
     const chapter = parseChapter(expectedChapter);
     const normalizedTitle = normalizeTitle(title, chapter, this.config.rejectEmbeddedChapterHeading);
@@ -2434,6 +2602,7 @@ export class NovelEngine {
       const timestamp = nowIso();
       const transactionId = `commit-ch${padChapter(chapter)}-${sha256(`${normalizeProjectId(projectId)}:${chapter}:${requestString || bodySha256}:${fingerprint}`).slice(0, 24)}`;
       const chapterMarkdown = `# 第${chapter}章 ${normalizedTitle}\n\n${trimmedContent}\n`;
+      await this.prepareNarrativeUpdatesUnlocked(projectDir, { chapter, bodySha256, continuityDelta: normalizedDelta, causalEvents, foreshadowingEntries });
       const foreshadowingResult = await this.buildForeshadowingLedgerAfterChanges(projectDir, chapter, bodySha256, foreshadowingChanges, timestamp);
       const closure = this.initialClosureRecord(chapter, bodySha256, normalizedDelta, timestamp, foreshadowingResult.changed, requestString);
       const nextState = {
@@ -2908,8 +3077,22 @@ export class NovelEngine {
         for (const record of memory.records ?? []) if (Number(record.chapter) === number) checkBinding("MEMORY", record.id, record.sourceSha256);
         const causal = await readJsonOr(resolveInside(projectDir, "story/causal-events.json"), { events: [] });
         for (const event of causal.events ?? []) if (Number(event.chapter) === number && ["occurred", "cancelled"].includes(event.status)) checkBinding("CAUSAL", event.eventId, event.bodySha256);
+        const causalAnalysis = analyzeCausalGraph(causal.events ?? [], (causal.events ?? []).filter((event) => Number(event.chapter) === number).map((event) => event.eventId));
+        errors.push(...causalAnalysis.errors);
+        warnings.push(...causalAnalysis.warnings);
+        try { await this.assertCausalEvidenceBindings(projectDir, causalAnalysis.events); }
+        catch (error) { errors.push({ code: error.code ?? "CAUSAL_EVIDENCE_INVALID", ...error.details, message: error.message }); }
         const foreshadowing = await readJsonOr(resolveInside(projectDir, "story/foreshadowing.json"), { entries: [] });
         for (const entry of foreshadowing.entries ?? []) if (Number(entry.sourceChapter) === number && entry.status !== "planned") checkBinding("FORESHADOW", entry.id, entry.bodySha256);
+        for (const entry of foreshadowing.entries ?? []) {
+          if (![entry.sourceChapter, entry.plantedChapter, entry.payoffChapter].some((chapter) => Number(chapter) === number)) continue;
+          errors.push(...foreshadowingFindings(entry));
+          warnings.push(...foreshadowingWarnings(entry));
+          if (entry.plantedBodySha256) {
+            try { await this.assertCommittedBodyBinding(projectDir, entry.plantedChapter, entry.plantedBodySha256); }
+            catch (error) { errors.push({ code: "FORESHADOW_PLANT_STALE_BINDING", id: entry.id, chapter: entry.plantedChapter, message: error.message }); }
+          }
+        }
         for (const ledgerType of Object.keys(LEDGER_FILES)) {
           const ledger = await readJsonOr(resolveInside(projectDir, LEDGER_FILES[ledgerType]), ledgerTemplate());
           for (const entry of ledger.entries ?? []) {
@@ -3050,6 +3233,9 @@ export class NovelEngine {
         else if (currentHash !== record.sourceSha256) errors.push({ code: "MEMORY_STALE_BINDING", id: record.id, chapter: record.chapter, expected: currentHash, actual: record.sourceSha256 });
       }
       const causal = await readJsonOr(resolveInside(projectDir, "story/causal-events.json"), { events: [] });
+      const causalAnalysis = analyzeCausalGraph(causal.events ?? []);
+      errors.push(...causalAnalysis.errors);
+      warnings.push(...causalAnalysis.warnings);
       for (const event of causal.events ?? []) {
         if (!["occurred", "cancelled"].includes(event.status)) continue;
         if (!event.chapter || !event.bodySha256) errors.push({ code: "CAUSAL_BODY_BINDING_MISSING", id: event.eventId });
@@ -3057,6 +3243,9 @@ export class NovelEngine {
       }
       const foreshadowing = await readJsonOr(resolveInside(projectDir, "story/foreshadowing.json"), { entries: [] });
       for (const entry of foreshadowing.entries ?? []) {
+        errors.push(...foreshadowingFindings(entry));
+        warnings.push(...foreshadowingWarnings(entry));
+        if (entry.plantedBodySha256 && chapterBindings.get(Number(entry.plantedChapter)) !== entry.plantedBodySha256) errors.push({ code: "FORESHADOW_PLANT_STALE_BINDING", id: entry.id, chapter: entry.plantedChapter, expected: chapterBindings.get(Number(entry.plantedChapter)) ?? null, actual: entry.plantedBodySha256 });
         if (entry.status === "planned") continue;
         if (!entry.sourceChapter || !entry.bodySha256) errors.push({ code: "FORESHADOW_BODY_BINDING_MISSING", id: entry.id });
         else if (chapterBindings.get(Number(entry.sourceChapter)) !== entry.bodySha256) errors.push({ code: "FORESHADOW_STALE_BINDING", id: entry.id, chapter: entry.sourceChapter, expected: chapterBindings.get(Number(entry.sourceChapter)) ?? null, actual: entry.bodySha256 });

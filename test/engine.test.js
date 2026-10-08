@@ -92,6 +92,271 @@ async function expectCode(promise, code) {
   });
 }
 
+async function readLedger(projectDir, name) {
+  return JSON.parse(await fs.readFile(path.join(projectDir, "story", name), "utf8"));
+}
+
+async function commitSecond(engine) {
+  const content = bodyOf(32, "后");
+  await approve(engine, 2, content, "second");
+  return engine.commitChapter({ projectId: "book01", expectedChapter: 2, title: "后来揭示", content, summary: "后来叙述先前事件。", requestId: "second-chapter" });
+}
+
+test("unplanted foreshadowing delta cannot advance or pay off before commit", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const body = bodyOf(30);
+  await approve(engine, 1, body);
+  const before = await fs.readFile(path.join(projectDir, "state.json"), "utf8");
+  const beforeLedger = await readLedger(projectDir, "foreshadowing.json");
+  for (const action of ["advance", "payoff", "close"]) {
+    await expectCode(engine.commitChapter({ projectId: "book01", expectedChapter: 1, title: "无埋设回收", content: body, summary: "未知线索", requestId: `invalid-${action}`, continuityDelta: { foreshadowing: [{ id: "orphan", action }] } }), "FORESHADOW_TRANSITION_INVALID");
+    assert.equal((await engine.commitStatus({ projectId: "book01", requestId: `invalid-${action}` })).status, "not_found");
+  }
+  assert.equal(await fs.readFile(path.join(projectDir, "state.json"), "utf8"), before);
+  assert.deepEqual(await readLedger(projectDir, "foreshadowing.json"), beforeLedger);
+  assert.deepEqual(await fs.readdir(path.join(projectDir, "requests", "commits")), []);
+  assert.equal((await engine.readChapter({ projectId: "book01", chapter: 1 })).found, false);
+
+  const committed = await engine.commitChapter({ projectId: "book01", expectedChapter: 1, title: "短伏笔", content: body, summary: "同章埋设并回收", requestId: "short-clue", continuityDelta: { foreshadowing: [{ id: "key", action: "open" }, { id: "key", action: "payoff" }] } });
+  const clue = (await readLedger(projectDir, "foreshadowing.json")).entries[0];
+  assert.equal(clue.status, "paid");
+  assert.equal(clue.plantedChapter, 1);
+  assert.equal(clue.payoffChapter, 1);
+  assert.equal(clue.plantedBodySha256, committed.bodySha256);
+  const replay = await engine.commitChapter({ projectId: "book01", expectedChapter: 1, title: "短伏笔", content: body, summary: "同章埋设并回收", requestId: "short-clue", continuityDelta: { foreshadowing: [{ id: "key", action: "open" }, { id: "key", action: "payoff" }] } });
+  assert.equal(replay.idempotentReplay, true);
+});
+
+test("partial foreshadowing updates retain planting provenance and terminal replay", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const first = await commitOne(engine);
+  const second = await commitSecond(engine);
+  await engine.upsertForeshadowing({ projectId: "book01", expectedRevision: 0, entry: { id: "key", type: "prop", status: "open", plantedChapter: 1, sourceChapter: 1, bodySha256: first.bodySha256, surfaceMeaning: "沾血钥匙", payoffWindow: { start: 2, end: 3 } } });
+  await engine.upsertForeshadowing({ projectId: "book01", expectedRevision: 1, entry: { id: "key", status: "advanced", sourceChapter: 2, bodySha256: second.bodySha256, notes: "血型确认" } });
+  const advanced = (await readLedger(projectDir, "foreshadowing.json")).entries[0];
+  assert.equal(advanced.type, "prop");
+  assert.equal(advanced.plantedChapter, 1);
+  assert.equal(advanced.plantedBodySha256, first.bodySha256);
+  assert.equal(advanced.bodySha256, second.bodySha256);
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "key", notes: "只修改说明" } });
+  assert.equal((await readLedger(projectDir, "foreshadowing.json")).entries[0].status, "advanced");
+  const paid = { id: "key", status: "paid", sourceChapter: 2, bodySha256: second.bodySha256 };
+  await engine.upsertForeshadowing({ projectId: "book01", entry: paid });
+  await engine.upsertForeshadowing({ projectId: "book01", entry: paid });
+  const before = await readLedger(projectDir, "foreshadowing.json");
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { ...paid, status: "open" } }), "FORESHADOW_TRANSITION_INVALID");
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { ...paid, plantedChapter: 2 } }), "FORESHADOW_PLANT_IMMUTABLE");
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", expectedRevision: 0, entry: paid }), "FORESHADOW_LEDGER_REVISION_MISMATCH");
+  assert.deepEqual(await readLedger(projectDir, "foreshadowing.json"), before);
+  assert.equal(before.entries[0].payoffChapter, 2);
+  assert.equal((await engine.foreshadowingDue({ projectId: "book01", chapter: 3 })).due.length, 0);
+});
+
+test("planned and cancelled clues stay compatible without inventing planting evidence", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "future", status: "planned", plantedChapter: 8, type: "world" } });
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "future", notes: "仍然是计划" } });
+  const first = await commitOne(engine);
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "future", status: "open", sourceChapter: 1, bodySha256: first.bodySha256 } });
+  const opened = (await readLedger(projectDir, "foreshadowing.json")).entries[0];
+  assert.equal(opened.plantedChapter, 1, "scheduled planting is not a frozen actual anchor");
+  assert.equal(opened.type, "world");
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { id: "late", status: "open", plantedChapter: 3, sourceChapter: 1, bodySha256: first.bodySha256 } }), "FORESHADOW_PLANT_AFTER_SOURCE");
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "cancelled", status: "cancelled", sourceChapter: 1, bodySha256: first.bodySha256 } });
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { id: "cancelled", status: "open", sourceChapter: 1, bodySha256: first.bodySha256 } }), "FORESHADOW_TRANSITION_INVALID");
+  const ledger = await readLedger(projectDir, "foreshadowing.json");
+  assert.equal(ledger.entries.find((entry) => entry.id === "cancelled").plantedBodySha256, null);
+});
+
+test("terminal clues freeze normalized facts while identical replay remains legal", async (t) => {
+  for (const status of ["paid", "cancelled"]) await t.test(status, async (child) => {
+    const { engine, projectDir } = await fixture(child);
+    const first = await commitOne(engine);
+    const second = await commitSecond(engine);
+    if (status === "paid") await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "seed", status: "open", sourceChapter: 1, bodySha256: first.bodySha256 } });
+    const terminal = { id: "seed", status, sourceChapter: 2, bodySha256: second.bodySha256, notes: "original" };
+    await engine.upsertForeshadowing({ projectId: "book01", entry: terminal });
+    await engine.upsertForeshadowing({ projectId: "book01", entry: { ...terminal, bodySha256: second.bodySha256.toUpperCase(), notes: " original " } });
+    const laterBody = bodyOf(33, "三");
+    await approve(engine, 3, laterBody, "terminal-third");
+    const later = await engine.commitChapter({ projectId: "book01", expectedChapter: 3, title: "无关后章", content: laterBody, summary: "不移动已有回收", requestId: "terminal-third" });
+    const before = await readLedger(projectDir, "foreshadowing.json");
+    const beforeState = await fs.readFile(path.join(projectDir, "state.json"), "utf8");
+    for (const patch of [{ notes: "rewritten" }, { sourceChapter: 3, bodySha256: later.bodySha256 }, { bodySha256: first.bodySha256 }, { type: "information" }, { hiddenMeaning: "different fact" }, { prerequisites: ["new prerequisite"] }, { plantedBodySha256: first.bodySha256, notes: "cannot hide a rewrite in provenance repair" }]) {
+      await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { ...terminal, ...patch } }), "FORESHADOW_TERMINAL_PAYLOAD_MISMATCH");
+      assert.deepEqual(await readLedger(projectDir, "foreshadowing.json"), before);
+      assert.equal(await fs.readFile(path.join(projectDir, "state.json"), "utf8"), beforeState);
+    }
+  });
+});
+
+test("revised planting evidence blocks delta advance and payoff before the chapter transaction", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const first = await commitOne(engine);
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "seed", status: "open", sourceChapter: 1, bodySha256: first.bodySha256 } });
+  await commitSecond(engine);
+  const revised = bodyOf(35, "修");
+  await approve(engine, 1, revised, "stale-plant");
+  await engine.reviseChapter({ projectId: "book01", chapter: 1, content: revised, summary: "埋设章修订", expectedBodySha256: first.bodySha256, expectedRevision: 1, requestId: "stale-plant-revision" });
+  const content = bodyOf(33, "三");
+  await approve(engine, 3, content, "third");
+  const beforeState = await fs.readFile(path.join(projectDir, "state.json"), "utf8");
+  const beforeLedger = await readLedger(projectDir, "foreshadowing.json");
+  for (const action of ["advance", "payoff"]) {
+    const requestId = `stale-plant-${action}`;
+    await expectCode(engine.commitChapter({ projectId: "book01", expectedChapter: 3, title: "不能使用旧证据", content, summary: "推进线索", requestId, continuityDelta: { foreshadowing: [{ id: "seed", action }] } }), "SOURCE_BODY_HASH_MISMATCH");
+    assert.equal((await engine.commitStatus({ projectId: "book01", requestId })).status, "not_found");
+    assert.equal(await fs.readFile(path.join(projectDir, "state.json"), "utf8"), beforeState);
+    assert.deepEqual(await readLedger(projectDir, "foreshadowing.json"), beforeLedger);
+    assert.equal((await engine.readChapter({ projectId: "book01", chapter: 3 })).found, false);
+  }
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "seed", bodySha256: sha256(revised), plantedBodySha256: sha256(revised) } });
+  const committed = await engine.commitChapter({ projectId: "book01", expectedChapter: 3, title: "核验后的线索", content, summary: "来源已重建", requestId: "rebuilt-plant-advance", continuityDelta: { foreshadowing: [{ id: "seed", action: "advance" }] } });
+  assert.equal(committed.nextChapter, 4);
+  assert.deepEqual((await readLedger(projectDir, "foreshadowing.json")).entries[0].plantedEvidenceHistory, [{ chapter: 1, bodySha256: first.bodySha256 }]);
+});
+
+test("legacy plant hashes are only supplemented by explicit source-validated updates", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const first = await commitOne(engine);
+  const legacy = { id: "legacy", status: "open", plantedChapter: 1, sourceChapter: 1, bodySha256: first.bodySha256 };
+  await fs.writeFile(path.join(projectDir, "story", "foreshadowing.json"), JSON.stringify({ revision: 1, entries: [legacy] }));
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "legacy", notes: "legacy remains unknown" } });
+  assert.equal((await readLedger(projectDir, "foreshadowing.json")).entries[0].plantedBodySha256, null);
+  const before = await readLedger(projectDir, "foreshadowing.json");
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { id: "legacy", plantedBodySha256: "0".repeat(64) } }), "SOURCE_BODY_HASH_MISMATCH");
+  assert.deepEqual(await readLedger(projectDir, "foreshadowing.json"), before);
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "legacy", plantedBodySha256: first.bodySha256 } });
+  assert.equal((await readLedger(projectDir, "foreshadowing.json")).entries[0].plantedBodySha256, first.bodySha256);
+});
+
+test("causal mutations reject missing, unoccurred, cancelled and cyclic causes without writes", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const commit = await commitOne(engine);
+  const event = (eventId, extra = {}) => ({ eventId, summary: eventId, status: "occurred", chapter: 1, bodySha256: commit.bodySha256, ...extra });
+  await engine.recordCausalEvent({ projectId: "book01", event: event("root") });
+  await engine.recordCausalEvent({ projectId: "book01", event: event("child", { causes: ["root"] }) });
+  await engine.recordCausalEvent({ projectId: "book01", event: { eventId: "future", summary: "尚未发生的原因", status: "planned", chapter: 9 } });
+  const before = await readLedger(projectDir, "causal-events.json");
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: event("missing", { causes: ["absent"] }) }), "CAUSAL_REFERENCE_NOT_FOUND");
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: event("premature", { causes: ["future"] }) }), "CAUSAL_CAUSE_NOT_OCCURRED");
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: event("root", { causes: ["child"] }) }), "CAUSAL_CYCLE");
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: event("root", { status: "cancelled" }) }), "CAUSAL_CAUSE_NOT_OCCURRED");
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: { eventId: "future", summary: "改成 enables 也不能绕过", status: "planned", enables: ["child"] } }), "CAUSAL_CAUSE_NOT_OCCURRED");
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: event("self", { causes: ["self"] }) }), "CAUSAL_SELF_REFERENCE");
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", expectedRevision: 0, event: event("stale") }), "CAUSAL_LEDGER_REVISION_MISMATCH");
+  assert.deepEqual(await readLedger(projectDir, "causal-events.json"), before);
+  await engine.recordCausalEvent({ projectId: "book01", event: event("cancelled", { status: "cancelled" }) });
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: event("effect", { causes: ["cancelled"] }) }), "CAUSAL_CAUSE_NOT_OCCURRED");
+});
+
+test("internal causal batches preserve CAS and reject the entire invalid proposal without writing", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const first = await commitOne(engine);
+  const event = (eventId, extra = {}) => ({ eventId, summary: eventId, status: "occurred", chapter: 1, bodySha256: first.bodySha256, ...extra });
+  await engine.recordCausalEvent({ projectId: "book01", event: event("a") });
+  const before = await readLedger(projectDir, "causal-events.json");
+  await expectCode(engine.recordCausalEvents({ projectId: "book01", expectedRevision: before.revision, events: [event("b", { causes: ["a"] }), event("a", { causes: ["b"] })] }), "CAUSAL_CYCLE");
+  assert.deepEqual(await readLedger(projectDir, "causal-events.json"), before);
+  await expectCode(engine.recordCausalEvents({ projectId: "book01", expectedRevision: before.revision - 1, events: [event("b")] }), "CAUSAL_LEDGER_REVISION_MISMATCH");
+  assert.deepEqual(await readLedger(projectDir, "causal-events.json"), before);
+  const batch = await engine.recordCausalEvents({ projectId: "book01", expectedRevision: before.revision, events: [event("b", { causes: ["a"] }), event("a", { enables: ["b"] })] });
+  assert.equal(batch.revision, before.revision + 1);
+  assert.equal(batch.eventCount, 2);
+});
+
+test("causes and enables share cycle semantics while planned forward edges remain legal", async (t) => {
+  const { engine } = await fixture(t);
+  await engine.recordCausalEvent({ projectId: "book01", event: { eventId: "a", summary: "计划 A", status: "planned", enables: ["b"] } });
+  await engine.recordCausalEvent({ projectId: "book01", event: { eventId: "b", summary: "计划 B", status: "planned", causes: ["a"], enables: ["c"] } });
+  await assert.rejects(engine.recordCausalEvent({ projectId: "book01", event: { eventId: "c", summary: "计划 C", status: "planned", enables: ["a"] } }), (error) => error.code === "CAUSAL_CYCLE" && error.details.cycle.length === 4);
+  const integrity = await engine.projectIntegrityCheck({ projectId: "book01" });
+  assert.equal(integrity.integrityPass, true);
+  assert.ok(integrity.warnings.some((finding) => finding.code === "CAUSAL_REFERENCE_NOT_FOUND"));
+});
+
+test("valid later-recorded occurred causes permit nonlinear narration and verify ancestor hashes", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const first = await commitOne(engine);
+  const second = await commitSecond(engine);
+  await engine.recordCausalEvent({ projectId: "book01", event: { eventId: "earlier-world-event", summary: "第二章回溯揭示此前证据", status: "occurred", chapter: 2, bodySha256: second.bodySha256 } });
+  await engine.recordCausalEvent({ projectId: "book01", event: { eventId: "first-narration", summary: "第一章事件后来补全原因", status: "occurred", chapter: 1, bodySha256: first.bodySha256, causes: ["earlier-world-event"] } });
+  assert.equal((await engine.projectIntegrityCheck({ projectId: "book01" })).integrityPass, true);
+  const ledger = await readLedger(projectDir, "causal-events.json");
+  ledger.events.find((event) => event.eventId === "earlier-world-event").bodySha256 = "0".repeat(64);
+  await fs.writeFile(path.join(projectDir, "story", "causal-events.json"), JSON.stringify(ledger));
+  await expectCode(engine.recordCausalEvent({ projectId: "book01", event: { eventId: "dependent", summary: "不能消费陈旧原因", status: "occurred", chapter: 1, bodySha256: first.bodySha256, causes: ["earlier-world-event"] } }), "SOURCE_BODY_HASH_MISMATCH");
+});
+
+test("long planned chains use iterative cycle detection", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const events = Array.from({ length: 1500 }, (_, index) => ({ eventId: `e${index}`, summary: "计划", status: "planned", chapter: null, bodySha256: null, causes: index ? [`e${index - 1}`] : [], enables: [] }));
+  await fs.writeFile(path.join(projectDir, "story", "causal-events.json"), JSON.stringify({ revision: 0, events }));
+  await assert.rejects(engine.recordCausalEvent({ projectId: "book01", event: { eventId: "e0", summary: "闭环", status: "planned", causes: ["e1499"] } }), (error) => error.code === "CAUSAL_CYCLE" && error.details.cycle.length === 1501);
+});
+
+test("invalid causal continuity delta is rejected before its chapter transaction", async (t) => {
+  const { engine } = await fixture(t);
+  const body = bodyOf(30);
+  await approve(engine, 1, body);
+  await expectCode(engine.commitChapter({ projectId: "book01", expectedChapter: 1, title: "无来源原因", content: body, summary: "非法因果", requestId: "invalid-causal-delta", continuityDelta: { causalEvents: [{ eventId: "effect", summary: "结果", status: "occurred", causes: ["missing"] }] } }), "CAUSAL_REFERENCE_NOT_FOUND");
+  assert.equal((await engine.commitStatus({ projectId: "book01", requestId: "invalid-causal-delta" })).status, "not_found");
+  assert.equal((await engine.projectStatus("book01")).state.nextChapter, 1);
+});
+
+test("integrity diagnoses historical invalid graphs and clues without fabricating repairs", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const first = await commitOne(engine);
+  const events = [
+    { eventId: "a", summary: "环 A", status: "occurred", chapter: 1, bodySha256: first.bodySha256, causes: ["b"] },
+    { eventId: "b", summary: "环 B", status: "occurred", chapter: 1, bodySha256: first.bodySha256, causes: ["a"] },
+    { eventId: "lost", summary: "不存在的原因", status: "occurred", chapter: 1, bodySha256: first.bodySha256, causes: ["absent"] }
+  ];
+  const clue = { id: "orphan", status: "paid", plantedChapter: null, payoffChapter: 1, sourceChapter: 1, bodySha256: first.bodySha256 };
+  await fs.writeFile(path.join(projectDir, "story", "causal-events.json"), JSON.stringify({ revision: 1, events }));
+  await fs.writeFile(path.join(projectDir, "story", "foreshadowing.json"), JSON.stringify({ revision: 1, entries: [clue] }));
+  for (const result of [await engine.projectIntegrityCheck({ projectId: "book01", repair: true }), await engine.chapterIntegrityCheck({ projectId: "book01", chapter: 1 })]) {
+    assert.equal(result.integrityPass, false);
+    assert.ok(result.errors.some((finding) => finding.code === "CAUSAL_CYCLE"));
+    assert.ok(result.errors.some((finding) => finding.code === "CAUSAL_REFERENCE_NOT_FOUND"));
+    assert.ok(result.errors.some((finding) => finding.code === "FORESHADOW_PLANT_REQUIRED"));
+  }
+  assert.deepEqual((await readLedger(projectDir, "causal-events.json")).events, events);
+  assert.deepEqual((await readLedger(projectDir, "foreshadowing.json")).entries, [clue]);
+  await engine.recordCausalEvent({ projectId: "book01", event: { eventId: "independent-plan", summary: "无关正常计划", status: "planned" } });
+});
+
+test("legacy clue provenance stays unknown and new planting hashes detect revisions independently", async (t) => {
+  const { engine, projectDir } = await fixture(t);
+  const first = await commitOne(engine);
+  const second = await commitSecond(engine);
+  const legacy = { id: "legacy", status: "paid", plantedChapter: 1, sourceChapter: 2, bodySha256: second.bodySha256 };
+  await fs.writeFile(path.join(projectDir, "story", "foreshadowing.json"), JSON.stringify({ revision: 1, entries: [legacy] }));
+  const legacyCheck = await engine.projectIntegrityCheck({ projectId: "book01" });
+  assert.equal(legacyCheck.integrityPass, true, "missing newly introduced optional provenance is not a forced migration");
+  assert.ok(legacyCheck.warnings.some((finding) => finding.code === "FORESHADOW_PLANT_PROVENANCE_LEGACY"));
+  assert.deepEqual((await readLedger(projectDir, "foreshadowing.json")).entries[0], legacy);
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "new", status: "open", sourceChapter: 1, bodySha256: first.bodySha256 } });
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { id: "new", status: "paid", sourceChapter: 2, bodySha256: second.bodySha256, payoffChapter: 1 } }), "FORESHADOW_PAYOFF_INVALID");
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "new", status: "paid", sourceChapter: 2, bodySha256: second.bodySha256 } });
+  const revisedBody = bodyOf(35, "修");
+  await approve(engine, 1, revisedBody, "plant-revision");
+  await engine.reviseChapter({ projectId: "book01", chapter: 1, content: revisedBody, summary: "原埋设章修订", expectedBodySha256: first.bodySha256, expectedRevision: 1, requestId: "plant-revision" });
+  const project = await engine.projectIntegrityCheck({ projectId: "book01" });
+  assert.ok(project.errors.some((finding) => finding.code === "FORESHADOW_PLANT_STALE_BINDING" && finding.id === "new"));
+  const scoped = await engine.chapterIntegrityCheck({ projectId: "book01", chapter: 2 });
+  assert.ok(scoped.errors.some((finding) => finding.code === "FORESHADOW_PLANT_STALE_BINDING" && finding.id === "new"));
+  const clue = (await readLedger(projectDir, "foreshadowing.json")).entries.find((entry) => entry.id === "new");
+  assert.equal(clue.bodySha256, second.bodySha256);
+  assert.equal(clue.plantedBodySha256, first.bodySha256, "payoff evidence cannot wash away stale planting provenance");
+  await expectCode(engine.upsertForeshadowing({ projectId: "book01", entry: { id: "new", plantedBodySha256: "0".repeat(64) } }), "SOURCE_BODY_HASH_MISMATCH");
+  await engine.upsertForeshadowing({ projectId: "book01", entry: { id: "new", plantedBodySha256: sha256(revisedBody) } });
+  const rebuilt = (await readLedger(projectDir, "foreshadowing.json")).entries.find((entry) => entry.id === "new");
+  assert.deepEqual(rebuilt.plantedEvidenceHistory, [{ chapter: 1, bodySha256: first.bodySha256 }]);
+  assert.equal(rebuilt.bodySha256, second.bodySha256);
+  assert.equal((await engine.projectIntegrityCheck({ projectId: "book01" })).integrityPass, true, "explicit source-validated evidence rebuild can recover after revision");
+});
+
 test("project locks wait for short contention instead of failing immediately", async (t) => {
   const { engine, projectDir } = await fixture(t, { lockAcquireTimeoutMs: 1000 });
   let releaseOwner;
